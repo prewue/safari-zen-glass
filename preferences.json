@@ -74,6 +74,36 @@
     "defaultValue": true
   },
   {
+    "property": "mod.safari.native-glass",
+    "label": "🫧 Native Liquid Glass panel — a real NSGlassEffectView behind the pinned sidebar (macOS 26; older macOS gets the sidebar material)",
+    "type": "checkbox",
+    "defaultValue": true,
+    "disabledOn": [
+      "windows",
+      "linux"
+    ]
+  },
+  {
+    "property": "mod.safari.native-glass.style",
+    "label": "Glass style",
+    "type": "dropdown",
+    "defaultValue": "regular",
+    "options": [
+      {
+        "value": "regular",
+        "label": "Regular — frosted, like a Safari sidebar"
+      },
+      {
+        "value": "clear",
+        "label": "Clear — more of what is behind the window"
+      }
+    ],
+    "disabledOn": [
+      "windows",
+      "linux"
+    ]
+  },
+  {
     "type": "separator",
     "label": "Site colour (experimental)"
   },

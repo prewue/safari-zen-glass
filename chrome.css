@@ -471,3 +471,74 @@
     }
   }
 }
+
+/* 12. Native glass behind the pinned panel. native-glass.uc.mjs puts an
+   NSGlassEffectView under Gecko's view at the panel's rect and sets
+   [safari-native-glass] while it is there. Gecko then paints nothing in the
+   panel: the gap moves from the toolbox background to a spread shadow on the
+   panel, the workspace gradient is clipped out of the panel's rounded rect
+   (--safari-glass-hole, from the script), and the theme tint is scaled by
+   --safari-glass-tint. Specificity is one step above section 10. DEV.md §12. */
+@media -moz-pref("mod.safari.pinned-panel") and -moz-pref("mod.safari.native-glass") {
+  :root {
+    --safari-glass-tint: 0.35;
+  }
+
+  /* A corner on the root is the first thing GetFrameTransparency checks, and
+     it is what keeps the window non-opaque across every restyle of :root. */
+  :root[safari-native-glass-host] {
+    border-radius: 0.1px !important;
+  }
+
+  :root[safari-native-glass]:is(:not([zen-compact-mode="true"]), [zen-compact-animating]):not([customizing]):not([inDOMFullscreen="true"]) {
+    & #navigator-toolbox {
+      background: transparent !important;
+
+      /* Outranks section 10's empty-tab wash, which would land on the glass. */
+      :root[zen-has-empty-tab="true"] & {
+        background: transparent !important;
+      }
+
+      & #zen-toolbar-background {
+        background: transparent !important;
+        backdrop-filter: none !important;
+        box-shadow:
+          var(--zen-big-shadow),
+          0 0 0 var(--safari-pin-gap) var(--safari-pin-canvas, rgb(255, 255, 255)) !important;
+
+        @media (-moz-content-prefers-color-scheme: dark) {
+          box-shadow:
+            var(--zen-big-shadow),
+            0 0 0 var(--safari-pin-gap) var(--safari-pin-canvas, rgb(32, 32, 32)) !important;
+        }
+
+        :root[zen-has-empty-tab="true"] & {
+          box-shadow:
+            var(--zen-big-shadow),
+            0 0 0 var(--safari-pin-gap) var(--safari-pin-canvas, rgba(255, 255, 255, 0.6)) !important;
+
+          @media (-moz-content-prefers-color-scheme: dark) {
+            box-shadow:
+              var(--zen-big-shadow),
+              0 0 0 var(--safari-pin-gap) var(--safari-pin-canvas, rgba(255, 255, 255, 0.1)) !important;
+          }
+        }
+
+        /* Zen's workspace crossfade pair, scaled together (DEV.md §2). */
+        &::after {
+          outline: none !important;
+          opacity: calc(var(--zen-background-opacity) * var(--safari-glass-tint)) !important;
+        }
+
+        &::before {
+          outline: none !important;
+          opacity: calc((1 - var(--zen-background-opacity)) * var(--safari-glass-tint)) !important;
+        }
+      }
+    }
+
+    & #zen-browser-background {
+      clip-path: var(--safari-glass-hole, none) !important;
+    }
+  }
+}

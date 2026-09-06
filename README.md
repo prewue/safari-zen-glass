@@ -47,6 +47,11 @@ tab hover and reveal animation — but these do not:
 - **Pinned sidebar with the compact panel.** With compact mode off, the
   sidebar keeps compact's floating panel but stays put, the page sits beside
   it, and the gap around the panel takes the page's own background colour.
+- **Native Liquid Glass panel.** In the pinned layout the panel's own
+  background is dropped and a native `NSGlassEffectView` is placed behind the
+  sidebar, inside Zen's window, exactly at the panel's rounded rect. The
+  site colour and the workspace theme tint it lightly. Regular or clear glass,
+  in the settings.
 - **Sidebar follows the site.** The sidebar takes the site's colour — from its
   favicon, its `theme-color` or its page background — once per navigation,
   cross-fading between sites. Replaces your workspace colour on the sidebar.
@@ -77,6 +82,10 @@ defaults delete app.zen-browser.zen NSConvolutionOverride1
 ## Note
 
 On macOS this mod runs `/usr/bin/defaults` from privileged browser code to set
-the window corner radius. Install it only if you're happy with that.
+the window corner radius, and loads a small native library
+(`native/SafariZenGlass.dylib`, Swift, source and build script in `native/`)
+into the browser process to place the glass. While the glass is on, the
+browser window is a non-opaque window. Install it only if you're happy with
+that.
 
 Internals, measurements and research notes: [DEV.md](DEV.md).

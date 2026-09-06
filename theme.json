@@ -1,16 +1,17 @@
 {
-  "id": "safari-zen",
-  "name": "Safari-like Zen",
-  "description": "Makes Zen feel like Safari on macOS: native window corner radius, a translucent blurred sidebar, Safari-matched sidebar padding, a spring reveal animation, an optional pinned sidebar panel that wears compact mode's float, and a sidebar that follows the current site's colour.",
-  "version": "1.7.0",
+  "id": "safari-zen-glass",
+  "name": "Safari-like Zen · Glass",
+  "description": "Experimental fork of Safari-like Zen: the pinned sidebar panel is a native macOS 26 Liquid Glass (NSGlassEffectView) behind Zen's own sidebar UI, plus everything the original does: native window corners, Safari-matched padding, site colour, spring motion.",
+  "version": "1.8.0",
   "author": "prewue",
-  "homepage": "https://github.com/prewue/safari-zen",
-  "readme": "https://raw.githubusercontent.com/prewue/safari-zen/main/README.md",
+  "homepage": "https://github.com/prewue/safari-zen-glass",
+  "readme": "https://raw.githubusercontent.com/prewue/safari-zen-glass/main/README.md",
   "image": "https://github.com/user-attachments/assets/217cd074-300f-4893-987f-3f23704b3ee3",
   "createdAt": "2026-08-22",
   "tags": [
     "macos",
     "safari",
+    "liquid-glass",
     "sidebar",
     "pinned",
     "animations",
@@ -48,6 +49,13 @@
     "folder-motion.uc.mjs": {
       "name": "Folder motion",
       "description": "Retimes folder animations so icon, chevron and content move together, and publishes space swipe progress so the blur can follow the gesture.",
+      "include": [
+        "chrome://browser/content/browser.xhtml"
+      ]
+    },
+    "native-glass.uc.mjs": {
+      "name": "Native glass",
+      "description": "Puts a native macOS 26 Liquid Glass (NSGlassEffectView) behind the pinned sidebar panel, through native/SafariZenGlass.dylib.",
       "include": [
         "chrome://browser/content/browser.xhtml"
       ]
