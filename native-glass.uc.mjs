@@ -7,9 +7,10 @@ const PREF = "mod.safari.native-glass";
 const PREF_STYLE = "mod.safari.native-glass.style";
 const PREF_PANEL = "mod.safari.pinned-panel";
 const PREF_DEBUG = "mod.safari.native-glass.debug";
-// "blur": Gecko blurs the page behind the compact panel, which a native view
-// under Gecko cannot do. "native": the same NSGlassEffectView as pinned, over
-// the page's colour, with the page clipped back to the panel. DEV.md §12.
+// "native": the real NSGlassEffectView, above Gecko where it refracts the page,
+// with Zen's sidebar re-parented into a transparent popup window that macOS
+// composites above it. "blur": no native glass, Gecko's own backdrop-filter.
+// DEV.md §12.
 const PREF_COMPACT = "mod.safari.native-glass.compact";
 // Zen swaps the window's content view on this; the native side re-mounts.
 const PREF_VIBRANCY = "zen.widget.macos.window-vibrancy";
@@ -20,6 +21,10 @@ const VAR_BAND_CONTENT = "--safari-glass-band-content";
 // The colour Gecko would have painted the column, resolved in CSS.
 const VAR_COLOUR = "--safari-glass-backdrop";
 const TAG = "[Safari-like Zen / glass]";
+const HOST_ID = "safari-glass-host";
+const STRIP_ID = "safari-glass-strip";
+// How long the sidebar stays after the pointer leaves it, matching Zen's own.
+const HIDE_MS = 120;
 const LIB = "native/SafariZenGlass.dylib";
 // Long enough for the compact toggle's slide, with a margin.
 const FOLLOW_MS = 700;
@@ -60,7 +65,7 @@ function debug(...args) {
 function ensurePrefs() {
   if (!Services.prefs.prefHasUserValue(PREF)) Services.prefs.setBoolPref(PREF, true);
   if (!Services.prefs.prefHasUserValue(PREF_STYLE)) Services.prefs.setStringPref(PREF_STYLE, "regular");
-  if (!Services.prefs.prefHasUserValue(PREF_COMPACT)) Services.prefs.setStringPref(PREF_COMPACT, "blur");
+  if (!Services.prefs.prefHasUserValue(PREF_COMPACT)) Services.prefs.setStringPref(PREF_COMPACT, "native");
 }
 
 // The dylib sits next to this script; chrome://sine/content/<id>/ maps to the
@@ -100,6 +105,7 @@ function open(path) {
     colour: lib.declare("szg_set_colour", abi, ctypes.void_t, ptr, d, d, d, d),
     style: lib.declare("szg_set_style", abi, ctypes.void_t, ptr, ctypes.int32_t),
     visible: lib.declare("szg_set_visible", abi, ctypes.void_t, ptr, ctypes.int32_t),
+    above: lib.declare("szg_set_above", abi, ctypes.void_t, ptr, ctypes.int32_t),
     dump: lib.declare("szg_dump", abi, ctypes.int32_t, ptr, ctypes.char.ptr),
   };
   const raw = window.docShell.treeOwner.QueryInterface(Ci.nsIBaseWindow).nativeHandle;
@@ -124,9 +130,211 @@ function compact() {
   return root.getAttribute("zen-compact-mode") === "true";
 }
 
+// ---- compact: the sidebar in its own native window, above the glass.
+// A view under Gecko cannot blur Gecko's pixels, and one over them covers the
+// sidebar. The way out is a second native window: the glass goes *above*
+// Gecko, where it refracts the page, and Zen's own sidebar is re-parented into
+// a transparent XUL popup, which macOS composites above the glass. DEV.md §12.
+const host = {
+  panel: null,
+  strip: null,
+  parent: null,
+  next: null,
+  hideTimer: 0,
+  open: false,
+  // The sidebar's real width, kept while it is in the window: Zen does
+  // arithmetic on whatever getAndApplySidebarWidth returns, and the popup's
+  // geometry is not the sidebar's.
+  width: 0,
+
+  get toolbox() {
+    return toolbox();
+  },
+
+  build() {
+    if (this.panel) return;
+    const panel = document.createXULElement("panel");
+    panel.id = HOST_ID;
+    for (const [name, value] of [
+      ["noautohide", "true"],
+      ["norolluponanchor", "true"],
+      ["consumeoutsideclicks", "never"],
+      ["level", "parent"],
+      ["nonnative", "true"],
+    ]) {
+      panel.setAttribute(name, value);
+    }
+    document.getElementById("mainPopupSet").appendChild(panel);
+    this.panel = panel;
+
+    // The panel's shadow root paints an opaque background of its own; only an
+    // inline style on the slot reaches it.
+    const slot = panel.shadowRoot?.querySelector("slot");
+    if (slot) {
+      slot.style.setProperty("background", "transparent", "important");
+      slot.style.setProperty("background-color", "transparent", "important");
+    }
+
+    // Zen reveals the sidebar when the pointer reaches the sliver of toolbox it
+    // leaves on screen; in the popup there is no sliver, so this strip is it.
+    const strip = document.createXULElement("box");
+    strip.id = STRIP_ID;
+    strip.addEventListener("mouseenter", () => this.reveal());
+    document.getElementById("browser")?.appendChild(strip);
+    this.strip = strip;
+  },
+
+  reveal() {
+    try {
+      window.gZenCompactModeManager?.flashSidebar?.(400);
+    } catch (e) {}
+    this.toolbox?.setAttribute("zen-has-hover", "true");
+    schedule();
+  },
+
+  // Zen keeps its own reveal attributes on the toolbox wherever it lives.
+  get revealed() {
+    const t = this.toolbox;
+    if (!t) return false;
+    return [
+      "zen-has-hover",
+      "zen-user-show",
+      "zen-has-empty-tab",
+      "flash-popup",
+      "has-popup-menu",
+      "movingtab",
+      "zen-compact-mode-active",
+    ].some(a => t.hasAttribute(a));
+  },
+
+  // moveBefore, not appendChild: a state-preserving move keeps the running
+  // animations Zen's compact toggle waits on. Removing and re-inserting the
+  // toolbox cancels them, and zen-compact-animating never clears.
+  move(node, parent, before) {
+    try {
+      parent.moveBefore(node, before ?? null);
+    } catch (e) {
+      parent.insertBefore(node, before ?? null);
+    }
+  },
+
+  adopt() {
+    const t = this.toolbox;
+    if (!t || t.parentElement === this.panel) return;
+    this.parent = t.parentElement;
+    this.next = t.nextElementSibling;
+    this.move(t, this.panel, null);
+    root.setAttribute("safari-glass-hosted", "");
+  },
+
+  get hosted() {
+    const t = this.toolbox;
+    return !!(t && this.panel && t.parentElement === this.panel);
+  },
+
+  release() {
+    const t = this.toolbox;
+    if (t && this.panel && t.parentElement === this.panel) {
+      const parent = this.parent ?? document.getElementById("browser");
+      const before = this.next && this.next.parentElement === parent ? this.next : null;
+      this.move(t, parent, before);
+    }
+    root.removeAttribute("safari-glass-hosted");
+  },
+
+  // The sidebar's rect inside the window: Zen's float on three sides.
+  rect() {
+    const gap = parseFloat(getComputedStyle(root).getPropertyValue("--zen-compact-float") || "14") / 2;
+    const width = parseFloat(getComputedStyle(root).getPropertyValue("--zen-sidebar-width") || "0") || 250;
+    const pad = parseFloat(getComputedStyle(root).getPropertyValue("--zen-toolbox-padding") || "6");
+    const w = Math.round(width + pad * 2);
+    const h = Math.round(window.innerHeight - gap * 2);
+    const x = rightSide() ? Math.round(window.innerWidth - gap - w) : Math.round(gap);
+    return { x, y: Math.round(gap), width: w, height: h };
+  },
+
+  show() {
+    if (root.hasAttribute("zen-compact-animating")) return this.rect();
+    if (!this.hosted) {
+      const w = this.toolbox?.getBoundingClientRect().width;
+      if (w > 1) this.width = w;
+    }
+    this.build();
+    const r = this.rect();
+    root.style.setProperty("--safari-glass-host-width", r.width + "px");
+    root.style.setProperty("--safari-glass-host-height", r.height + "px");
+    this.adopt();
+    if (this.panel.state === "closed") {
+      this.panel.openPopup(root, "overlap", r.x, r.y, false, false);
+    } else {
+      this.panel.moveTo(window.mozInnerScreenX + r.x, window.mozInnerScreenY + r.y);
+    }
+    this.open = true;
+    return r;
+  },
+
+  hide() {
+    if (!this.panel) return;
+    this.open = false;
+    try {
+      this.panel.hidePopup();
+    } catch (e) {}
+    this.release();
+    root.style.removeProperty("--safari-glass-host-width");
+    root.style.removeProperty("--safari-glass-host-height");
+  },
+
+  teardown() {
+    window.clearTimeout(this.hideTimer);
+    this.hideTimer = 0;
+    this.hide();
+    this.strip?.remove();
+    this.panel?.remove();
+    this.strip = null;
+    this.panel = null;
+  },
+};
+
+// Zen starts its compact animation synchronously right after it flips the
+// attribute, so an observer is too late to hand the toolbox back. These two
+// hooks do it in time, and keep the popup's geometry out of Zen's sidebar
+// width. Both are restored when the glass stops.
+let patched = null;
+
+function patchZen() {
+  const mgr = window.gZenCompactModeManager;
+  if (!mgr || patched) return;
+  const animate = mgr.animateCompactMode;
+  const width = mgr.getAndApplySidebarWidth;
+  if (typeof animate !== "function" || typeof width !== "function") return;
+  patched = { mgr, animate, width };
+  mgr.animateCompactMode = function (...args) {
+    try {
+      host.hide();
+    } catch (e) {}
+    return animate.apply(this, args);
+  };
+  mgr.getAndApplySidebarWidth = function (...args) {
+    // Never a bare undefined: Zen subtracts from this and feeds it to a
+    // keyframe, and one NaN leaves zen-compact-animating stuck for good.
+    if (host.hosted) return host.width || 250;
+    const value = width.apply(this, args);
+    if (typeof value === "number" && value > 1) host.width = value;
+    return value;
+  };
+  debug("hooked gZenCompactModeManager");
+}
+
+function unpatchZen() {
+  if (!patched) return;
+  patched.mgr.animateCompactMode = patched.animate;
+  patched.mgr.getAndApplySidebarWidth = patched.width;
+  patched = null;
+}
+
 function nativeInCompact() {
   try {
-    return Services.prefs.getStringPref(PREF_COMPACT, "blur") === "native";
+    return Services.prefs.getStringPref(PREF_COMPACT, "native") === "native";
   } catch (e) {
     return false;
   }
@@ -163,20 +371,23 @@ function radius(panelRect) {
   return parseFloat(getComputedStyle(panel()).borderRadius) || 0;
 }
 
+// The glass is off entirely here; nothing below runs.
+function offOutright() {
+  if (!pref(PREF, true)) return true;
+  if (root.hasAttribute("customizing") || root.getAttribute("inDOMFullscreen") === "true") return true;
+  const t = toolbox();
+  if (!t) return true;
+  return false;
+}
+
 function wanted() {
-  if (!pref(PREF, true)) return false;
-  if (!compact() && !pref(PREF_PANEL, true)) return false;
-  // In compact the page runs *behind* the panel, and a native view under Gecko
-  // cannot blur Gecko's own pixels; the glass there is a choice between the
-  // real blur (Gecko's) and the real glass (over the page's colour).
-  if (compact() && !nativeInCompact()) return false;
+  if (offOutright()) return false;
+  if (compact()) return nativeInCompact() && host.revealed;
+  if (!pref(PREF_PANEL, true)) return false;
   if (root.hasAttribute("zen-compact-animating")) return false;
-  if (root.hasAttribute("customizing") || root.getAttribute("inDOMFullscreen") === "true") return false;
   const p = panel();
   if (!p || getComputedStyle(p).display === "none") return false;
-  const t = toolbox();
-  if (!t) return false;
-  const visibility = getComputedStyle(t).visibility;
+  const visibility = getComputedStyle(toolbox()).visibility;
   if (visibility === "collapse" || visibility === "hidden") return false;
   return true;
 }
@@ -190,6 +401,17 @@ function schedule() {
   });
 }
 
+// Zen drops its reveal attributes the moment the pointer leaves; give the
+// sidebar the same grace period it has in stock compact before it goes.
+function scheduleCompact() {
+  window.clearTimeout(host.hideTimer);
+  if (!host.revealed && host.open) {
+    host.hideTimer = window.setTimeout(schedule, HIDE_MS);
+    return;
+  }
+  schedule();
+}
+
 // The compact toggle animates the toolbox's inline margin; keep updating every
 // frame until it settles, so the panel is in place the moment it is shown.
 function follow(ms = FOLLOW_MS) {
@@ -199,10 +421,47 @@ function follow(ms = FOLLOW_MS) {
 
 function update() {
   if (!started) return;
+  // Zen's compact toggle animates the toolbox and waits on that animation;
+  // stay out of the way, and give it back the element it is animating.
+  if (root.hasAttribute("zen-compact-animating")) {
+    host.hide();
+    hide();
+    follow(300);
+    return;
+  }
+  const inCompact = compact();
+  const hosted = inCompact && !offOutright() && nativeInCompact();
+  if (hosted) {
+    patchZen();
+    host.build();
+    root.setAttribute("safari-glass-strip-armed", "");
+  } else {
+    root.removeAttribute("safari-glass-strip-armed");
+    if (host.panel) host.teardown();
+  }
+
   if (!wanted()) {
+    if (inCompact) host.hide();
     hide();
     return;
   }
+  if (inCompact) {
+    updateCompact();
+  } else {
+    updatePinned();
+  }
+  if (!shown) {
+    shown = true;
+    fn.style(handle, Services.prefs.getStringPref(PREF_STYLE, "regular") === "clear" ? 1 : 0);
+    fn.visible(handle, 1);
+    root.setAttribute(ATTR, kind === 2 ? "glass" : "material");
+    debug("shown", kind === 2 ? "NSGlassEffectView" : "NSVisualEffectView", inCompact ? "compact" : "pinned");
+  }
+}
+
+// Pinned: the glass sits under Gecko on a backdrop in the page's colour, and
+// Gecko stops painting the whole sidebar column.
+function updatePinned() {
   const p = panel().getBoundingClientRect();
   const c = toolbox().getBoundingClientRect();
   if (!p.width || !p.height) {
@@ -210,18 +469,12 @@ function update() {
     return;
   }
   const r = radius(p);
-
-  // The band Gecko stops painting and the native layer takes over: the whole
-  // sidebar column pinned, gap included, so it keeps its square corners
-  // against the window; up to the panel's outer edge in compact, where the
-  // panel floats over the page.
-  const edge = compact()
-    ? (rightSide() ? p.left : p.right)
-    : (rightSide() ? c.left : c.right);
+  const edge = rightSide() ? c.left : c.right;
   const backdrop = rightSide()
     ? { x: edge, y: 0, width: Math.max(0, window.innerWidth - edge), height: window.innerHeight }
     : { x: 0, y: 0, width: Math.max(0, edge), height: window.innerHeight };
 
+  fn.above(handle, 0);
   fn.frames(
     handle,
     p.x, p.y, p.width, p.height,
@@ -232,22 +485,24 @@ function update() {
 
   const gradient = document.getElementById("zen-browser-background");
   if (gradient) root.style.setProperty(VAR_BAND, bandFor(gradient, edge));
+  root.style.removeProperty(VAR_BAND_CONTENT);
+}
 
-  // Compact only: pinned, the page already starts after the column.
-  const content = document.getElementById("zen-appcontent-wrapper");
-  if (compact() && content) {
-    root.style.setProperty(VAR_BAND_CONTENT, bandFor(content, edge));
-  } else {
-    root.style.removeProperty(VAR_BAND_CONTENT);
-  }
-
-  if (!shown) {
-    shown = true;
-    fn.style(handle, Services.prefs.getStringPref(PREF_STYLE, "regular") === "clear" ? 1 : 0);
-    fn.visible(handle, 1);
-    root.setAttribute(ATTR, kind === 2 ? "glass" : "material");
-    debug("shown", kind === 2 ? "NSGlassEffectView" : "NSVisualEffectView");
-  }
+// Compact: the glass goes *above* Gecko, where it refracts the page, and the
+// sidebar rides above it in its own window.
+function updateCompact() {
+  const r = host.show();
+  root.style.removeProperty(VAR_BAND);
+  root.style.removeProperty(VAR_BAND_CONTENT);
+  const corner = cornerFor(r);
+  root.style.setProperty("--safari-glass-host-radius", corner + "px");
+  fn.above(handle, 1);
+  fn.frames(
+    handle,
+    r.x, r.y, r.width, r.height,
+    0, 0, 0, 0,
+    corner, window.devicePixelRatio, rightSide() ? 1 : 0
+  );
 }
 
 // The page canvas colour, straight through on every change: page-canvas.uc.mjs
@@ -261,6 +516,15 @@ function pushColour() {
   lastColour = key;
   fn.colour(handle, c[0], c[1], c[2], c[3]);
   debug("colour", key);
+}
+
+function cornerFor(rect) {
+  const windowRadius = parseFloat(getComputedStyle(root).getPropertyValue("--safari-window-radius"));
+  if (root.hasAttribute("safari-window-radius") && windowRadius > 0) {
+    const gap = rightSide() ? window.innerWidth - rect.x - rect.width : rect.x;
+    return Math.max(0, windowRadius - Math.max(0, gap));
+  }
+  return parseFloat(getComputedStyle(root).getPropertyValue("--zen-border-radius")) || 12;
 }
 
 function hide() {
@@ -308,7 +572,15 @@ async function start() {
   resizeObserver = new window.ResizeObserver(schedule);
   resizeObserver.observe(panel());
   resizeObserver.observe(t);
-  rootObserver = new window.MutationObserver(() => follow());
+  rootObserver = new window.MutationObserver(records => {
+    if (records.some(r => r.attributeName === "zen-compact-mode" || r.attributeName === "zen-compact-animating")) {
+      try {
+        host.hide();
+      } catch (e) {}
+      hide();
+    }
+    follow();
+  });
   rootObserver.observe(root, {
     attributes: true,
     attributeFilter: [
@@ -322,7 +594,7 @@ async function start() {
       "zen-has-empty-tab",
     ],
   });
-  toolboxObserver = new window.MutationObserver(() => (compact() ? follow() : schedule()));
+  toolboxObserver = new window.MutationObserver(() => (compact() ? scheduleCompact() : schedule()));
   toolboxObserver.observe(t, {
     attributes: true,
     // Zen's compact reveal conditions, from zen-compact-mode.css, plus the
@@ -354,6 +626,11 @@ function stop() {
   if (!started) return;
   started = false;
   hide();
+  root.removeAttribute("safari-glass-strip-armed");
+  try {
+    host.teardown();
+    unpatchZen();
+  } catch (e) {}
   resizeObserver?.disconnect();
   rootObserver?.disconnect();
   toolboxObserver?.disconnect();

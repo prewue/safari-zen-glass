@@ -1473,27 +1473,64 @@ navigations, native value against the CSS variable:
 | GitHub | `rgb(13, 17, 23)` | 0.051 0.067 0.090 |
 | empty tab | `rgba(255, 255, 255, 0.1)` | 1 1 1 0.1 |
 
-### Compact mode
+### Compact mode: the sidebar in its own window
 
-Compact's panel floats over the page, so the band follows the panel's outer
-edge as it slides and the page is clipped back to it: while the sidebar is
-revealed the page's left strip is behind the panel and not painted, and the
-gap around the panel is the page's colour rather than its pixels.
+Compact's panel floats over the page, and the page has to be blurred *through*
+the glass, with the refraction, or it is not glass. That cannot be done with a
+view under Gecko, and the way out is not a filter but a second native window.
 
-The slide is a `left`/`right` transition on the toolbox (Zen's 0.15s, section
-5's spring), so the script follows it frame by frame: any of Zen's reveal
-attributes on the toolbox, or a transition event from it, runs the update on
-every animation frame for 0.9s. The toolbox never goes `visibility: hidden` in
-compact — it is parked off screen — so "the panel is away" is `#titlebar`'s
-computed visibility, which Zen transitions to hidden at the end of the slide,
-plus the panel rect leaving the viewport. The compact toggle itself
-(`zen-compact-animating`) hides the glass for the duration; that animation is an
-inline margin `animate()` on the toolbox, not a transition.
+**What a view under Gecko can and cannot see.** `NSGlassEffectView` samples the
+window content below it, not merely what is behind the window: with an opaque
+backdrop layer directly beneath it, the glass took that layer's colour (white
+page 118, dark page 25). So the glass does refract Gecko's pixels - if they are
+below it. Moved above the `ChildView`, it refracts the page beautifully,
+lensing and all; it also refracts the sidebar's own tabs and buttons, because
+page and chrome are one Gecko surface. Below the ChildView it sees neither.
 
-The concentric radius is the window radius less the panel's distance from the
-**window** edge, not from the toolbox: compact's revealed toolbox sits
-`--zen-compact-float / 2` off screen, and measuring against it gave 12 instead
-of 19.
+That is a z-order problem, not an API one, and no filter fixes it:
+
+- `backdrop-filter` on the panel blurs the page, but its output is opaque page
+  pixels, which hide the native glass underneath.
+- SVG filters do work in `backdrop-filter` in chrome - `url(#f)` with an
+  `feColorMatrix` matched `invert(1)` exactly, and one with `feGaussianBlur`
+  matched `blur(10px)` - but `feImage`, `feDisplacementMap`, `feConvolveMatrix`
+  and `feTurbulence` all render nothing, so a refraction map is out.
+
+**The way out.** Gecko puts a XUL popup in its *own* `nsCocoaWindow`, which
+macOS composites above the browser window. So the glass goes above the
+`ChildView`, where it refracts the page, and Zen's `#navigator-toolbox` is
+re-parented into a transparent popup that floats above the glass. Verified:
+the popup renders over the glass, the real sidebar renders inside it, and
+clicking a tab in it switches tabs.
+
+Four things this needs:
+
+1. **A transparent popup.** `nsMenuPopupFrame::CreateWidget` takes the window's
+   transparency from `nsLayoutUtils::GetFrameTransparency` on the popup frame,
+   so a rounded, `appearance: none`, transparent-background panel qualifies -
+   `PopupWindow opaque=false` once it does. But the panel's own shadow root
+   paints an opaque `slot[part=content]`; `::part(content)` in a user sheet does
+   not reach it, and the background (and padding) have to be set inline on the
+   slot.
+2. **A hover strip.** Compact reveals the sidebar when the pointer reaches the
+   few pixels of toolbox Zen leaves on screen. In the popup there is no sliver,
+   so an 8px strip at the window edge takes its place and sets `zen-has-hover`;
+   Zen's own handlers keep it from there, since it still holds the element.
+3. **`moveBefore`, not `appendChild`.** A state-preserving move keeps the
+   animations Zen's compact toggle awaits. Removing and re-inserting the
+   toolbox cancels them and `zen-compact-animating` never clears.
+4. **Two hooks on `gZenCompactModeManager`.** It starts its animation
+   synchronously right after flipping the attribute, so an observer cannot hand
+   the toolbox back in time: `animateCompactMode` releases it first. And
+   `getAndApplySidebarWidth` must never see the popup's geometry - nor return
+   `undefined`, which Zen subtracts from and feeds to a keyframe, wedging the
+   toggle for good. Both are restored when the glass stops.
+
+**Harness note.** When the display sleeps or the window is fully occluded,
+Gecko suspends the refresh driver: `requestAnimationFrame` never fires, Zen's
+compact animation never starts, and `zen-compact-animating` looks stuck. That
+is the test machine, not the mod - and window captures go black or stale at the
+same time (§8's recipe needs the window on screen).
 
 ### Gatekeeper
 

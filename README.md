@@ -48,11 +48,13 @@ tab hover and reveal animation — but these do not:
   sidebar keeps compact's floating panel but stays put, the page sits beside
   it, and the gap around the panel takes the page's own background colour.
 - **Native Liquid Glass panel.** The panel's own background, blur and tint are
-  dropped and a native `NSGlassEffectView` is placed behind the sidebar, inside
-  Zen's window, at the panel's rounded rect, over the page's own colour. No
-  tint, no theme wash, and nothing shows through the window. Works pinned and
-  in compact mode as the sidebar slides in on hover. Regular or clear glass, in
-  the settings.
+  dropped and a native `NSGlassEffectView` takes their place, inside Zen's
+  window, at the panel's rounded rect. Pinned, it sits under the browser's own
+  drawing on the page's colour, so nothing shows through the window. In compact
+  mode it goes *over* the page, where it refracts and blurs the site behind the
+  sidebar the way Safari does, and Zen's sidebar rides above it in a window of
+  its own. Regular or clear glass, in the settings; the compact side can be
+  switched back to a plain Gecko blur there too.
 - **Sidebar follows the site.** The sidebar takes the site's colour — from its
   favicon, its `theme-color` or its page background — once per navigation,
   cross-fading between sites. Replaces your workspace colour on the sidebar.

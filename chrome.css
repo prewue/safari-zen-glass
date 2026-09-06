@@ -511,7 +511,65 @@
     }
   }
 
-  /* Compact: the page runs behind the panel, and only Gecko can blur Gecko's
+  /* Compact with the native glass: Zen's sidebar is re-parented into a
+     transparent popup window that macOS composites above the glass, so the
+     glass can sit over Gecko and refract the page. The popup paints nothing of
+     its own; the toolbox inside it is a plain box at the sidebar's size. */
+  #safari-glass-host {
+    -moz-default-appearance: none !important;
+    appearance: none !important;
+    background: transparent !important;
+    background-color: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    -moz-window-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border-radius: var(--safari-glass-host-radius, 12px) !important;
+
+    & #navigator-toolbox {
+      position: static !important;
+      inset: auto !important;
+      margin: 0 !important;
+      width: var(--safari-glass-host-width, 300px) !important;
+      height: var(--safari-glass-host-height, 100%) !important;
+      max-width: none !important;
+      background: transparent !important;
+      visibility: visible !important;
+      transition: none !important;
+
+      & #titlebar {
+        visibility: visible !important;
+      }
+
+      & #zen-toolbar-background {
+        display: none !important;
+      }
+    }
+  }
+
+  /* The sliver of toolbox Zen leaves on screen to catch the pointer is gone
+     while the sidebar lives in the popup; this strip takes its place. */
+  #safari-glass-strip {
+    display: none;
+
+    :root[zen-compact-mode="true"][safari-glass-strip-armed] & {
+      display: block;
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      width: 8px;
+      z-index: 20;
+      inset-inline-start: 0;
+    }
+
+    :root[zen-right-side="true"] & {
+      inset-inline-start: auto;
+      inset-inline-end: 0;
+    }
+  }
+
+  /* Compact without the native glass: the page runs behind the panel, and only Gecko can blur Gecko's
      own pixels, so the blur is a backdrop-filter and the glass's scrim, rim
      and top highlight are drawn over it. Independent of Zen's acrylic pref,
      which only decides whether Zen would have blurred it at all. */

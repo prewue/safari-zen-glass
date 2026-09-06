@@ -107,15 +107,15 @@
     "property": "mod.safari.native-glass.compact",
     "label": "Compact sidebar",
     "type": "dropdown",
-    "defaultValue": "blur",
+    "defaultValue": "native",
     "options": [
       {
-        "value": "blur",
-        "label": "Blur the site behind it — Gecko's own blur, the only thing that can see the page"
+        "value": "native",
+        "label": "Native glass — the real NSGlassEffectView, refracting the site behind it"
       },
       {
-        "value": "native",
-        "label": "Native glass — the same NSGlassEffectView as pinned, over the page's colour"
+        "value": "blur",
+        "label": "Gecko blur — a plain frosted panel, no native glass"
       }
     ],
     "disabledOn": [
