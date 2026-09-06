@@ -472,73 +472,94 @@
   }
 }
 
-/* 12. Native glass behind the pinned panel. native-glass.uc.mjs puts an
-   NSGlassEffectView under Gecko's view at the panel's rect and sets
-   [safari-native-glass] while it is there. Gecko then paints nothing in the
-   panel: the gap moves from the toolbox background to a spread shadow on the
-   panel, the workspace gradient is clipped out of the panel's rounded rect
-   (--safari-glass-hole, from the script), and the theme tint is scaled by
-   --safari-glass-tint. Specificity is one step above section 10. DEV.md §12. */
-@media -moz-pref("mod.safari.pinned-panel") and -moz-pref("mod.safari.native-glass") {
-  :root {
-    --safari-glass-tint: 0.35;
-  }
+/* 12. Glass sidebar. Pinned, native-glass.uc.mjs puts an NSGlassEffectView
+   under Gecko's view at the panel's rect, on an opaque backdrop in the page's
+   canvas colour, and sets [safari-native-glass]; Gecko then stops painting the
+   whole sidebar column so the native layer shows. Compact, the page runs
+   *behind* the panel and a view under Gecko cannot blur Gecko's own pixels, so
+   the blur there is Gecko's own backdrop-filter. Either way the panel carries
+   no tint and no shadow. Specificity is one step above section 10. DEV.md §12. */
+@media -moz-pref("mod.safari.native-glass") {
+  /* What the native backdrop is painted with: section 10's colours, resolved
+     here so the script can read one value. */
+  #navigator-toolbox {
+    --safari-glass-backdrop: var(--safari-pin-canvas, rgb(255, 255, 255));
 
-  /* A corner on the root is the first thing GetFrameTransparency checks, and
-     it is what keeps the window non-opaque across every restyle of :root. */
-  :root[safari-native-glass-host] {
-    border-radius: 0.1px !important;
-  }
-
-  :root[safari-native-glass]:is(:not([zen-compact-mode="true"]), [zen-compact-animating]):not([customizing]):not([inDOMFullscreen="true"]) {
-    & #navigator-toolbox {
-      background: transparent !important;
-
-      /* Outranks section 10's empty-tab wash, which would land on the glass. */
-      :root[zen-has-empty-tab="true"] & {
-        background: transparent !important;
-      }
-
-      & #zen-toolbar-background {
-        background: transparent !important;
-        backdrop-filter: none !important;
-        box-shadow:
-          var(--zen-big-shadow),
-          0 0 0 var(--safari-pin-gap) var(--safari-pin-canvas, rgb(255, 255, 255)) !important;
-
-        @media (-moz-content-prefers-color-scheme: dark) {
-          box-shadow:
-            var(--zen-big-shadow),
-            0 0 0 var(--safari-pin-gap) var(--safari-pin-canvas, rgb(32, 32, 32)) !important;
-        }
-
-        :root[zen-has-empty-tab="true"] & {
-          box-shadow:
-            var(--zen-big-shadow),
-            0 0 0 var(--safari-pin-gap) var(--safari-pin-canvas, rgba(255, 255, 255, 0.6)) !important;
-
-          @media (-moz-content-prefers-color-scheme: dark) {
-            box-shadow:
-              var(--zen-big-shadow),
-              0 0 0 var(--safari-pin-gap) var(--safari-pin-canvas, rgba(255, 255, 255, 0.1)) !important;
-          }
-        }
-
-        /* Zen's workspace crossfade pair, scaled together (DEV.md §2). */
-        &::after {
-          outline: none !important;
-          opacity: calc(var(--zen-background-opacity) * var(--safari-glass-tint)) !important;
-        }
-
-        &::before {
-          outline: none !important;
-          opacity: calc((1 - var(--zen-background-opacity)) * var(--safari-glass-tint)) !important;
-        }
-      }
+    @media (-moz-content-prefers-color-scheme: dark) {
+      --safari-glass-backdrop: var(--safari-pin-canvas, rgb(32, 32, 32));
     }
 
+    :root[zen-has-empty-tab="true"] & {
+      --safari-glass-backdrop: rgba(255, 255, 255, 0.6);
+
+      @media (-moz-content-prefers-color-scheme: dark) {
+        --safari-glass-backdrop: rgba(255, 255, 255, 0.1);
+      }
+    }
+  }
+
+  /* No theme or accent tint on the panel in either mode, and no drop shadow:
+     the glass has its own edge. */
+  :root:is([safari-native-glass], [zen-compact-mode="true"]):not([customizing]):not([inDOMFullscreen="true"]) {
+    & #zen-toolbar-background {
+      box-shadow: none !important;
+
+      &::before,
+      &::after {
+        display: none !important;
+      }
+    }
+  }
+
+  /* Compact: the page runs behind the panel, and only Gecko can blur Gecko's
+     own pixels, so the blur is a backdrop-filter and the glass's scrim, rim
+     and top highlight are drawn over it. Independent of Zen's acrylic pref,
+     which only decides whether Zen would have blurred it at all. */
+  :root {
+    --safari-glass-blur: 32px;
+    --safari-glass-saturate: 180%;
+    --safari-glass-scrim: light-dark(rgba(255, 255, 255, 0.5), rgba(28, 28, 30, 0.45));
+    --safari-glass-rim: light-dark(rgba(0, 0, 0, 0.09), rgba(255, 255, 255, 0.14));
+    --safari-glass-highlight: light-dark(rgba(255, 255, 255, 0.75), rgba(255, 255, 255, 0.1));
+  }
+
+  :root[zen-compact-mode="true"]:not([safari-native-glass]):not([customizing]):not([inDOMFullscreen="true"]) {
+    & #zen-toolbar-background {
+      background: var(--safari-glass-scrim) !important;
+      backdrop-filter: blur(var(--safari-glass-blur)) saturate(var(--safari-glass-saturate)) !important;
+      outline: 1px solid var(--safari-glass-rim) !important;
+      outline-offset: -1px !important;
+      box-shadow: inset 0 1px 0 var(--safari-glass-highlight) !important;
+    }
+  }
+
+  /* Pinned: the column - gap included - is the native layer's, so Gecko paints
+     none of it. Section 10's background and its empty-tab wash both go. */
+  :root[safari-native-glass]:not([customizing]):not([inDOMFullscreen="true"]) {
+    & #zen-toolbar-background {
+      background: transparent !important;
+      backdrop-filter: none !important;
+    }
+
+    /* The workspace gradient covers the window and sits under the sidebar. */
     & #zen-browser-background {
-      clip-path: var(--safari-glass-hole, none) !important;
+      clip-path: var(--safari-glass-band, none) !important;
+    }
+
+    /* Compact with the native glass: the page runs under the floating panel,
+       so it is clipped back to the panel's outer edge. */
+    &[zen-compact-mode="true"] #zen-appcontent-wrapper {
+      clip-path: var(--safari-glass-band-content, none) !important;
+    }
+
+    @media -moz-pref("mod.safari.pinned-panel") {
+      & #navigator-toolbox {
+        background: transparent !important;
+
+        :root[zen-has-empty-tab="true"] & {
+          background: transparent !important;
+        }
+      }
     }
   }
 }

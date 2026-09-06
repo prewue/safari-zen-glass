@@ -1373,168 +1373,181 @@ Useful techniques if any of this needs re-verifying:
 
 ---
 
-## 12. Native Liquid Glass behind the pinned panel
+## 12. Native Liquid Glass behind the sidebar panel
 
 `mod.safari.native-glass`, chrome.css section 12, `native-glass.uc.mjs` and
 `native/SafariZenGlass.dylib` (Swift, `native/src`, built by `native/build.sh`).
 
-The panel is a real `NSGlassEffectView`, placed **below Gecko's `ChildView`**
-inside Zen's window at the panel's rect, with the panel's corner radius. Gecko
-paints nothing in that rect, so its tabs, buttons and search field sit on the
-glass, and the glass blurs what is behind the window. Nothing of the sidebar
-is re-implemented natively.
+The panel is a real `NSGlassEffectView` placed **below Gecko's `ChildView`**
+inside Zen's window, at the panel's rect and corner radius, on an opaque
+backdrop layer in the page's canvas colour. Gecko's tabs, search field and
+buttons paint on top of it. Nothing of the sidebar is re-implemented natively,
+the window is left exactly as Zen made it, and no part of the sidebar is a hole
+through the window.
 
-Everything below was measured on macOS 26.5 with Zen 1.22b (Gecko 155.0.1),
-Xcode 26.2, with the harness in §8 plus a window capture that composites the
-window over what is behind it (`CGWindowListCreateImage` with
-`kCGWindowListOptionOnScreenBelowWindow`, so windows on top do not matter).
+Measured on macOS 26.5, Zen 1.22b (Gecko 155.0.1), Xcode 26.2, with the harness
+in §8 plus window captures composited over what is behind the window
+(`CGWindowListCreateImage`, `kCGWindowListOptionOnScreenBelowWindow`).
 
 ### Gecko's surface is transparent where CSS paints nothing
 
 `nsCocoaWindow::WidgetPaintsBackground()` returns `true` (`nsCocoaWindow.h:403`),
 so `PresShell::ComputeBackstopColor` returns transparent on macOS, always. The
 chrome root is themed `-moz-mac-window` (`global.css:14`), which
-`nsNativeThemeCocoa` draws as nothing — the window's own background colour is
-"the OS-level clear colour" the theme relies on. So every pixel Gecko writes
-where no CSS layer paints is alpha 0, and the window frame (or Zen's material
-view) is what shows through.
+`nsNativeThemeCocoa` draws as nothing. So every pixel Gecko writes where no CSS
+layer paints is alpha 0, and whatever is below the `ChildView` shows through.
+A red view under the ChildView, with the sidebar column's backgrounds stripped,
+came up red under the tabs, the search field and the window buttons.
 
-The proof was a red backing view under the ChildView: with the panel column
-stripped of its backgrounds, the whole column came up red *under* the tabs,
-the search field and the window buttons. At the panel's centre the layers
-are `#zen-browser-background::after` (the workspace gradient, 40 % black in
-the default theme), the mod's toolbox background, and the panel's
-`::before`/`::after` theme pair at 0.6 alpha with acrylic — the toolbox
-background was the only opaque one.
+This corrects §6, which said Gecko composites alpha 255 everywhere: that was
+measured on the *window's* pixels, and an opaque `NSWindow` reports alpha 255
+whatever its layers hold.
 
-### Specificity, again
+### What Gecko has to stop painting
 
-Stripping the toolbox background at first did nothing, for the reason in §8:
-Sine's sheet is user origin, both rules are `!important`, and section 10's
-selector is `:root:is(…):not(…):not(…) #navigator-toolbox` — (1,4,0). A bare
-`#navigator-toolbox` in the same sheet loses. Section 12 keys everything off
-`:root[safari-native-glass]:is(…):not(…):not(…)`, one attribute higher, and its
-empty-tab rule nests `:root[zen-has-empty-tab="true"] &` to clear section
-10's nested wash, which is higher still.
+Three layers cover the sidebar band, and all three are Gecko's:
 
-### Behind-window sampling needs two things
+| layer | why it is in the way | what section 12 does |
+|---|---|---|
+| `#navigator-toolbox` background | §8 paints the gap with `--safari-pin-canvas` | `background: transparent` |
+| `#zen-toolbar-background` | the panel's own colour, acrylic blur and theme tint | `background: transparent`, `backdrop-filter: none`, `::before`/`::after` `display: none` |
+| `#zen-browser-background` | the workspace gradient spans the window | `clip-path` the band away |
 
-With the glass in place and the column transparent, the panel was a flat grey.
-The matrix, panel pixel sampled on a dark page over a purple wallpaper:
+Compact adds a fourth: the page runs under the floating panel, so
+`#zen-appcontent-wrapper` is clipped back to the panel's outer edge too.
+
+**Specificity.** Stripping the toolbox background did nothing at first, for the
+reason in §8: Sine's sheet is user origin, both rules are `!important`, and
+section 10's selector is `:root:is(…):not(…):not(…) #navigator-toolbox` —
+(1,4,0). A bare `#navigator-toolbox` in the same sheet loses. Section 12 keys
+everything off `:root[safari-native-glass]…`, one attribute higher, and nests
+`:root[zen-has-empty-tab="true"] &` to clear section 10's nested wash.
+
+### Only rect clips reach a remote page
+
+The panel wants a *hole* in the page, not a band. It cannot have one.
+Measured on a white page, sampling a point that a clip should remove:
+
+| clip | on | page pixel |
+|---|---|---|
+| `inset(0 0 0 300px)` | `#zen-appcontent-wrapper` | clipped |
+| `inset(0 0 0 300px)` | `#tabbrowser-tabpanels` | clipped |
+| `inset(0 0 0 300px)` | `#tabbrowser-tabbox` | clipped |
+| `inset(0 0 0 300px round 20px)` | `#zen-appcontent-wrapper` | clipped |
+| `path(evenodd, …)` with a hole | `#zen-appcontent-wrapper` | **not clipped** |
+| `inset(0 0 0 300px)` | the `<browser>` itself | **not clipped** |
+
+A rect or rounded rect becomes a WebRender clip and applies to the remote
+frame; an arbitrary path needs a mask, and the mask does not reach it. The
+element must be an ancestor, not the browser element.
+
+So the shape is a band from the window edge to the panel's outer edge, and the
+native layer paints all of it — gap included. That is also why the gap kept its
+square corners against the window: an earlier version painted the gap with a
+spread `box-shadow` on the panel instead, which follows the panel's *rounded*
+corners and left the window's own corner unpainted.
+
+### The backdrop colour
+
+Section 12 resolves section 10's colours into one custom property on the
+toolbox:
+
+```css
+#navigator-toolbox {
+  --safari-glass-backdrop: var(--safari-pin-canvas, rgb(255, 255, 255));
+  @media (-moz-content-prefers-color-scheme: dark) { … rgb(32, 32, 32) }
+  :root[zen-has-empty-tab="true"] & { … rgba(255, 255, 255, .6) / .1 }
+}
+```
+
+`var()` is substituted at computed-value time, so the script reads one resolved
+colour with `getComputedStyle`. It pushes it on every `style` mutation of
+`:root` — which is exactly when `page-canvas.uc.mjs` writes the variable — so
+the native colour changes in the same turn as the CSS, not a frame later. Five
+navigations, native value against the CSS variable:
+
+| page | `--safari-pin-canvas` | native |
+|---|---|---|
+| Wikipedia | `rgb(255, 255, 255)` | 1 1 1 1 |
+| YouTube | `rgb(15, 15, 15)` | 0.0588 ×3 |
+| GitHub | `rgb(13, 17, 23)` | 0.051 0.067 0.090 |
+| empty tab | `rgba(255, 255, 255, 0.1)` | 1 1 1 0.1 |
+
+### Compact mode
+
+Compact's panel floats over the page, so the band follows the panel's outer
+edge as it slides and the page is clipped back to it: while the sidebar is
+revealed the page's left strip is behind the panel and not painted, and the
+gap around the panel is the page's colour rather than its pixels.
+
+The slide is a `left`/`right` transition on the toolbox (Zen's 0.15s, section
+5's spring), so the script follows it frame by frame: any of Zen's reveal
+attributes on the toolbox, or a transition event from it, runs the update on
+every animation frame for 0.9s. The toolbox never goes `visibility: hidden` in
+compact — it is parked off screen — so "the panel is away" is `#titlebar`'s
+computed visibility, which Zen transitions to hidden at the end of the slide,
+plus the panel rect leaving the viewport. The compact toggle itself
+(`zen-compact-animating`) hides the glass for the duration; that animation is an
+inline margin `animate()` on the toolbox, not a transition.
+
+The concentric radius is the window radius less the panel's distance from the
+**window** edge, not from the toolbox: compact's revealed toolbox sits
+`--zen-compact-float / 2` off screen, and measuring against it gave 12 instead
+of 19.
+
+### Gatekeeper
+
+Zen's `Info.plist` has `LSFileQuarantineEnabled`, so every file the process
+writes carries `com.apple.quarantine` — Sine's downloaded zip and the dylib it
+extracts included (`xattr -l` on an installed copy: `00c1;…;Zen;`). `dlopen` of
+a quarantined library that is not notarized puts up "Apple could not verify …
+is free of malware" and fails. The script runs
+`/usr/bin/xattr -d com.apple.quarantine` on the library before `ctypes.open`,
+through `Subprocess.sys.mjs`. The proper alternative is a Developer ID
+signature plus notarization, which needs an Apple account. Files copied in by
+hand (the harness) are never quarantined, which is why this only showed on a
+real install.
+
+### Superseded: sampling behind the window
+
+`NSGlassEffectView` does sample across process boundaries, and an earlier
+version of this mod showed the desktop through the sidebar. It needed three
+things, all measured, all now removed:
+
+1. **A non-opaque window.** `isOpaque = NO` with a clear `backgroundColor`; the
+   window's rounded corners survive.
+2. **A hole in `ZenWindowMaterialView`.** Zen's content view is an
+   `NSVisualEffectView` with a behind-window material, and the glass samples it
+   rather than the desktop; it needed a `maskImage` with the panel cut out.
+3. **A corner on `:root`.** `nsIFrame::DidSetComputedStyle` calls
+   `PresShell::SetNeedsWindowPropertiesSync()` for any root-element style
+   change (`nsIFrame.cpp:1365`), and the sync calls
+   `SetTransparencyMode(GetFrameTransparency(canvas, root))`, which is `Opaque`
+   for a themed root — so the window went opaque again on the next restyle.
+   `GetFrameTransparency` (`nsLayoutUtils.cpp:6819`) checks a non-zero root
+   border radius before the theme, so `border-radius: 0.1px` on `:root` kept
+   Gecko itself holding the window transparent.
+
+The panel pixel over a purple wallpaper, dark page, with the glass at the
+panel's rect:
 
 | window | Zen material view | glass | panel pixel |
 |---|---|---|---|
-| opaque | present | none | (43,42,46) — the material, flat |
+| opaque | present | none | (43,42,46) |
 | opaque | present | regular / clear | (44,44,46) / (56,55,58) |
-| non-opaque | present | clear | (56,55,58) — no change |
-| non-opaque | present | none | (43,42,46) |
-| non-opaque | **absent** | none | (15,17,29) — **the wallpaper** |
-| non-opaque | absent | clear / regular | (40,42,52) / (37,38,45) — **glass over the wallpaper** |
-| opaque | absent | regular | (43,42,46) — flat again |
+| non-opaque | present | clear | (56,55,58) |
+| non-opaque | **absent** | none | (15,17,29) — the wallpaper |
+| non-opaque | absent | regular / clear | (37,38,45) / (40,42,52) — glass over it |
 
-So:
-
-1. **The window must be non-opaque.** The window server only composites what
-   is behind an opaque window's pixels when the window says it has alpha.
-   `isOpaque = NO` and a clear `backgroundColor`; the rounded corners survive
-   (corner pixels were wallpaper in every state).
-2. **Zen's `ZenWindowMaterialView` is in the way.** It is the window's content
-   view — an `NSVisualEffectView` with a behind-window material
-   (`zen.widget.macos.window-vibrancy`, material from
-   `zen.widget.macos.window-material`; the user's profile has 1, HUD) — and the
-   glass samples *it*. It gets a `maskImage` with the panel's hole cut out,
-   regenerated whenever the geometry changes (a 9-slice with `capInsets` past
-   the hole's corners so a stretch between updates keeps the corners right).
-   The material itself did not change look when the window went non-opaque,
-   so nothing else in the window moves.
-
-The material view is swapped for a plain `NSView` when the vibrancy pref
-flips (Zen's `nsCocoaWindow::UpdateWindowMaterial`); the dylib re-mounts its
-views and re-masks on every geometry call, and the script re-schedules one on
-that pref. Without a material view the frame no longer paints the window colour
-in a non-opaque window, so a base layer in `NSColor.windowBackgroundColor`
-(with the same hole) is painted under everything instead, permanently while
-attached, and re-resolved on appearance change.
-
-### The window keeps going opaque again
-
-Setting `isOpaque = NO` natively held for exactly as long as nothing restyled
-`:root`. `nsIFrame::DidSetComputedStyle` calls
-`PresShell::SetNeedsWindowPropertiesSync()` for **any** root-element style
-change (`nsIFrame.cpp:1365`), and `SyncWindowPropertiesIfNeeded` then calls
-`windowWidget->SetTransparencyMode(nsLayoutUtils::GetFrameTransparency(canvas, root))`
-— Gecko 155's Cocoa `SetTransparencyMode` has no popup-only guard and sets
-`opaque`/`backgroundColor` on any window. A themed root is `Opaque`
-(`nsNativeThemeCocoa::GetWidgetTransparency` says so for `-moz-mac-window`),
-so the very attribute the script sets to switch the CSS put the window back.
-
-`GetFrameTransparency` (`nsLayoutUtils.cpp:6819`) checks, in order: root
-opacity < 1, **a non-zero root border radius**, then the theme, then the
-background. Section 12 gives `:root[safari-native-glass-host]` a
-`border-radius: 0.1px`; the root paints nothing that a radius could change,
-and from then on Gecko itself keeps the window non-opaque through every
-restyle. On the way back Gecko sets the background to **white**, not the
-window colour, so the script removes the attribute and detaches a frame later,
-and the dylib restores the colour it saved at attach. `safari-native-glass-host`
-lives from attach to detach; `safari-native-glass` only while the glass is
-showing (pinned, not compact, not customizing, not DOM fullscreen).
-
-### What Gecko paints instead
-
-- **The gap** moved from the toolbox background to a spread `box-shadow` on the
-  panel: `0 0 0 var(--safari-pin-gap) var(--safari-pin-canvas)`. It follows
-  the panel's corners, its outer arc at radius 19 + 7 = 26 coincides with the
-  window's own corner, and it is Gecko-painted in the same frame as the page
-  placeholder, so §8's colour timing is untouched. The empty tab's wash rides
-  the same variable. The page-facing side has no gap and the ring runs 7px
-  under the page, which is above the toolbox. `--zen-big-shadow` stays first
-  in the list so the panel keeps its depth in the gap.
-- **The workspace gradient** is clipped out of the panel with
-  `clip-path: path(evenodd, …)` on `#zen-browser-background`, the hole drawn
-  by the script with Apple's continuous corner (three cubics per corner, the
-  §1 coefficients), in that element's own box.
-- **The theme / accent tint** on the panel's `::before`/`::after` stays,
-  scaled by `--safari-glass-tint` (0.35) with the §2 crossfade formula, and
-  the 1px outline goes: the glass has its own rim.
-- Panel `background` and `backdrop-filter` are off.
-
-### Geometry
-
-The script feeds CSS-pixel rects from `getBoundingClientRect()` and
-`devicePixelRatio`; the dylib converts through the window's
-`backingScaleFactor` and flips y against the ChildView's frame. The native
-radius is the concentric one from §1 (window radius minus the gap, 19 with
-the defaults; the CSS pseudos use the superellipse equivalent) or the panel's
-own radius without the native window radius. Updates are coalesced to one per
-animation frame from a `ResizeObserver` on the panel and the toolbox, a root
-attribute observer (compact, right side, customizing, fullscreen, window
-radius) and `resize`; between updates an autoresizing mask keeps the glass
-the window's height during a live resize. The hole is inset 0.5px inside the
-glass so no sliver of the material shows at the edge.
-
-### Loading the library
-
-- Zen's entitlements include `com.apple.security.cs.disable-library-validation`,
-  so an ad-hoc-signed dylib loads; `build.sh` signs it.
-- Sine installs a mod by downloading the repository zip
-  (`codeload.github.com`, `ucAPI.unpackRemoteArchive`) and extracting with
-  `nsIZipReader`, so the binary arrives intact. The path is resolved from
-  `import.meta.url` through the chrome registry to the profile's
-  `sine-mods/<id>/native/`.
-- The window is `nsIBaseWindow.nativeHandle` — the `NSWindow*` as a hex string
-  — cast with ctypes; the dylib also accepts a view.
-- The macOS 26 SDK is needed to *build* (the Command Line Tools' SDK 15 has no
-  `NSGlassEffectView.h`; `DEVELOPER_DIR` points `build.sh` at Xcode). The
-  dylib runs on macOS 12+ and falls back to an `NSVisualEffectView` sidebar
-  material with a rounded `maskImage` where the glass class is missing.
-- `-moz-pref()` in chrome.css is false for a pref that does not exist, and
-  Sine writes defaults from its settings page, not on install: the script
-  writes the two prefs itself if they are absent.
+It was dropped by request: the sidebar should not be a window into the desktop.
+The rows are kept because they are the proof that it is possible, and because
+they say exactly what to restore if it is ever wanted behind a setting.
 
 ### Not done
 
-- The site accent could be the glass's own `tintColor` instead of a CSS layer
-  over it; it would need the script to sample `--safari-accent-*` through
-  their 0.5s transition and push each frame.
-- Compact mode keeps the CSS acrylic panel: the native view cannot follow
-  Zen's slide animation without a per-frame sync.
+- The site accent as the glass's own `tintColor`. Off by request: the glass is
+  plain, and section 11's accent has no surface in this layout.
+- Notarizing the dylib instead of clearing its quarantine flag.
+- The glass follows the *chrome* appearance, so with dark chrome a white page
+  gives a dark frosted panel. Following the content scheme instead would make
+  Zen's own light-on-dark sidebar text unreadable.

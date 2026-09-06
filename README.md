@@ -47,11 +47,12 @@ tab hover and reveal animation — but these do not:
 - **Pinned sidebar with the compact panel.** With compact mode off, the
   sidebar keeps compact's floating panel but stays put, the page sits beside
   it, and the gap around the panel takes the page's own background colour.
-- **Native Liquid Glass panel.** In the pinned layout the panel's own
-  background is dropped and a native `NSGlassEffectView` is placed behind the
-  sidebar, inside Zen's window, exactly at the panel's rounded rect. The
-  site colour and the workspace theme tint it lightly. Regular or clear glass,
-  in the settings.
+- **Native Liquid Glass panel.** The panel's own background, blur and tint are
+  dropped and a native `NSGlassEffectView` is placed behind the sidebar, inside
+  Zen's window, at the panel's rounded rect, over the page's own colour. No
+  tint, no theme wash, and nothing shows through the window. Works pinned and
+  in compact mode as the sidebar slides in on hover. Regular or clear glass, in
+  the settings.
 - **Sidebar follows the site.** The sidebar takes the site's colour — from its
   favicon, its `theme-color` or its page background — once per navigation,
   cross-fading between sites. Replaces your workspace colour on the sidebar.
@@ -84,8 +85,8 @@ defaults delete app.zen-browser.zen NSConvolutionOverride1
 On macOS this mod runs `/usr/bin/defaults` from privileged browser code to set
 the window corner radius, and loads a small native library
 (`native/SafariZenGlass.dylib`, Swift, source and build script in `native/`)
-into the browser process to place the glass. While the glass is on, the
-browser window is a non-opaque window. Install it only if you're happy with
-that.
+into the browser process to place the glass. Zen quarantines every file it writes, so
+the mod clears the quarantine flag from that library with `/usr/bin/xattr`
+before loading it. Install it only if you're happy with that.
 
 Internals, measurements and research notes: [DEV.md](DEV.md).
