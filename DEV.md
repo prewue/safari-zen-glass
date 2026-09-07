@@ -1503,7 +1503,7 @@ re-parented into a transparent popup that floats above the glass. Verified:
 the popup renders over the glass, the real sidebar renders inside it, and
 clicking a tab in it switches tabs.
 
-Seven things this needs:
+What it takes:
 
 1. **A transparent popup.** `nsMenuPopupFrame::CreateWidget` takes the window's
    transparency from `nsLayoutUtils::GetFrameTransparency` on the popup frame,
@@ -1519,29 +1519,54 @@ Seven things this needs:
 3. **`moveBefore`, not `appendChild`.** A state-preserving move keeps the
    animations Zen's compact toggle awaits. Removing and re-inserting the
    toolbox cancels them and `zen-compact-animating` never clears.
-4. **The sidebar's own width back.** Out of `#browser`'s flex row the tab strip
-   stops being stretched and collapses to its content - the workspace measured
-   112px inside a 333px popup, and every tab label was cut - so the strip and
-   its workspaces are put back to the popup's width. The popup itself is the
-   panel: Zen's compact toolbox carries the float as padding, so the popup is
-   the toolbox's width less the float, floated by half of it.
-5. **A stand-in for the traffic lights.** macOS draws them itself, from the
+4. **Zen's variables, carried across.** Out of `#browser` the sidebar loses the
+   custom properties Zen sets through descendant rules - `--zen-toolbox-padding`
+   and `--zen-min-toolbox-padding` among them - and with them every margin and
+   padding that is `calc(var(...) / 2)`: the workspace collapsed to 112px in a
+   333px popup, tab labels were cut, and rows sat 3px too high. Whatever the
+   move drops is read off the toolbox before it goes and set on the popup, so
+   the subtree resolves it again; nothing else has to force a width. The popup
+   is sized the way Zen sizes its own panel, `--zen-sidebar-width` plus one
+   `--zen-toolbox-padding` - measuring the panel instead gives 16px too little,
+   because Zen widens it on the way out.
+   With that in place the hosted sidebar measures identical to stock compact:
+   `#titlebar` 335x786 at the same origin, the tab strip 319 wide at the same
+   offset, the workspace bleeding the same 2px past it, the bottom row on the
+   same line.
+5. **The urlbar out of breakout.** It is a `popover`, and in the popup that
+   puts it in the *window's* top layer - behind the popup - so the search field
+   simply was not there. Out of `breakout` it lays out in place; Firefox puts
+   the attribute back on every layout pass, so an observer takes it off again.
+6. **Everything the popup collected, back too.** Zen re-anchors
+   `#zen-sidebar-splitter` next to the sidebar on every layout pass, so it ends
+   up inside the popup; removing the popup then took the splitter with it, and
+   `animateCompactMode` throws on a missing splitter, which leaves
+   `zen-compact-animating` set and compact mode wedged for the rest of the
+   session. Release moves every child of the popup back, and a missing splitter
+   is recreated as a last resort.
+7. **A stand-in for the traffic lights.** macOS draws them itself, from the
    window-button box Gecko reports for *that* window; with the real box away in
    the popup there is nothing to report and the buttons vanish. An empty
    `-moz-window-button-box` in the main window, placed where the real box lands,
    keeps them - and they draw in the window's frame, above the glass.
-6. **Its own pointer tracking.** Zen's hover logic fires a `mouseleave` on the
+8. **Its own pointer tracking.** Zen's hover logic fires a `mouseleave` on the
    document the moment the pointer crosses into the popup's window, which would
    close the sidebar under the cursor. The strip and the popup are tracked
    separately - the strip's leave and the popup's enter arrive in either order -
    and Zen's non-hover reveals (the keyboard toggle, a menu, a dragged tab, the
    empty tab) are still honoured.
-7. **Two hooks on `gZenCompactModeManager`.** It starts its animation
+9. **Two hooks on `gZenCompactModeManager`.** It starts its animation
    synchronously right after flipping the attribute, so an observer cannot hand
    the toolbox back in time: `animateCompactMode` releases it first. And
    `getAndApplySidebarWidth` must never see the popup's geometry - nor return
    `undefined`, which Zen subtracts from and feeds to a keyframe, wedging the
    toggle for good. Both are restored when the glass stops.
+
+**The slide.** The popup spans from the window edge, so its own bounds clip the
+sidebar exactly where compact's does; the reveal translates the sidebar inside
+it while the glass frame moves the same distance in the same tick, on an
+ease-out over 190ms. Moving the popup window itself instead would put two
+windows in a per-frame race.
 
 **Putting the sidebar back where it was.** `release()` used a sibling captured
 at adopt time; by the time it runs that sibling can be gone, and inserting

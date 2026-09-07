@@ -149,6 +149,8 @@ const host = {
   open: false,
   urlbarPopover: null,
   urlbarObserver: null,
+  panelWidth: 0,
+  panelHeight: 0,
   // 0 parked off the window edge, 1 fully out. The popup stays where it is and
   // its content slides inside it, with the glass moving in step.
   progress: 0,
@@ -333,10 +335,18 @@ const host = {
   release() {
     const t = this.toolbox;
     this.freeUrlbar();
+    const parent = this.parent ?? document.getElementById("browser");
     if (t && this.panel && t.parentElement === this.panel) {
-      const parent = this.parent ?? document.getElementById("browser");
       const before = parent.children[Math.max(0, this.index)] ?? null;
       this.move(t, parent, before);
+    }
+    // Zen re-anchors its splitter next to the sidebar on every layout pass, so
+    // by now the popup may hold elements that are not ours. They go back too -
+    // taking the splitter down with the popup breaks compact mode for good.
+    if (this.panel && parent) {
+      for (const stray of [...this.panel.children]) {
+        this.move(stray, parent, t?.nextElementSibling ?? null);
+      }
     }
     root.removeAttribute("safari-glass-hosted");
   },
@@ -349,7 +359,15 @@ const host = {
     const style = getComputedStyle(this.toolbox ?? root);
     const float = parseFloat(style.getPropertyValue("--zen-compact-float")) || 14;
     const gap = Math.round(float / 2);
-    const w = Math.round((this.width || parseFloat(style.getPropertyValue("--zen-sidebar-width")) || 300) - float);
+    // Zen sizes its compact panel as the sidebar plus one toolbox padding
+    // (zen-compact-mode.css); measuring it while the sidebar is parked gives a
+    // narrower box, because Zen widens it on the way out.
+    const sidebar = parseFloat(style.getPropertyValue("--zen-sidebar-width"));
+    const pad = parseFloat(style.getPropertyValue("--zen-toolbox-padding"));
+    const w =
+      sidebar > 1
+        ? Math.round(sidebar + (pad > 0 ? pad : 0))
+        : this.panelWidth || Math.round((this.width || 300) - float);
     const h = Math.round(window.innerHeight - gap * 2);
     const x = rightSide() ? Math.round(window.innerWidth - gap - w) : gap;
     return { x, y: gap, width: w, height: h, gap, travel: w + gap };
@@ -382,13 +400,36 @@ const host = {
   // hover, and the plain sidebar flashes before the glass one arrives.
   attach() {
     if (this.hosted || root.hasAttribute("zen-compact-animating")) return;
-    const w = this.toolbox?.getBoundingClientRect().width;
+    const t = this.toolbox;
+    const w = t?.getBoundingClientRect().width;
     if (w > 1) this.width = w;
+    // Zen's own compact panel is laid out in the window right now: take its
+    // size, so the popup is the same box down to the pixel.
+    const own = document.getElementById("zen-toolbar-background")?.getBoundingClientRect();
+    if (own && own.width > 1) {
+      this.panelWidth = Math.round(own.width);
+      this.panelHeight = Math.round(own.height);
+    }
+    // Some of Zen's variables come from rules that only match inside the
+    // browser box; carry whatever the move would drop.
+    const before = {};
+    if (t) {
+      const cs = getComputedStyle(t);
+      for (const name of Array.from(cs)) {
+        if (name.startsWith("--zen")) before[name] = cs.getPropertyValue(name);
+      }
+    }
     this.build();
     const r = this.rect();
     root.style.setProperty("--safari-glass-host-width", r.width + "px");
     root.style.setProperty("--safari-glass-host-height", r.height + "px");
     this.adopt();
+    if (t) {
+      const after = getComputedStyle(t);
+      for (const [name, value] of Object.entries(before)) {
+        if (value && !after.getPropertyValue(name).trim()) this.panel.style.setProperty(name, value);
+      }
+    }
   },
 
   show() {
@@ -544,6 +585,19 @@ const host = {
 // width. Both are restored when the glass stops.
 let patched = null;
 
+// Zen's compact animation reads the splitter without checking; if it ever goes
+// missing the toggle throws and zen-compact-animating sticks for good.
+function ensureSplitter() {
+  if (document.getElementById("zen-sidebar-splitter")) return;
+  const browser = document.getElementById("browser");
+  const t = toolbox();
+  if (!browser || !t || t.parentElement !== browser) return;
+  const splitter = document.createXULElement("splitter");
+  splitter.id = "zen-sidebar-splitter";
+  browser.insertBefore(splitter, t.nextElementSibling);
+  debug("splitter restored");
+}
+
 function patchZen() {
   const mgr = window.gZenCompactModeManager;
   if (!mgr || patched) return;
@@ -554,6 +608,7 @@ function patchZen() {
   mgr.animateCompactMode = function (...args) {
     try {
       host.hide();
+      ensureSplitter();
     } catch (e) {}
     return animate.apply(this, args);
   };
@@ -671,6 +726,7 @@ function update() {
   } else {
     root.removeAttribute("safari-glass-strip-armed");
     if (host.panel) host.teardown();
+    ensureSplitter();
   }
 
   if (!wanted()) {

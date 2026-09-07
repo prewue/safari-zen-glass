@@ -542,20 +542,9 @@
       visibility: visible !important;
       transition: none !important;
 
-      /* Out of the browser's flex row, the tab strip stops being stretched
-         and collapses to its content; put it back to the popup's width. */
-      & #titlebar,
-      & #tabbrowser-tabs,
-      & #zen-tabs-wrapper,
-      & zen-workspace,
-      & .zen-workspace-tabs-section,
-      & .zen-current-workspace-indicator,
-      & #zen-sidebar-top-buttons,
-      & #nav-bar {
-        width: 100% !important;
-        max-width: none !important;
-        min-width: 0 !important;
-      }
+      /* Zen's own compact rules size #titlebar from --zen-sidebar-width; with
+         its variables carried across (DEV.md §12) the whole strip lays out on
+         its own, and nothing here needs to force a width. */
 
       & #titlebar {
         visibility: visible !important;
