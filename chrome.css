@@ -531,12 +531,29 @@
       position: static !important;
       inset: auto !important;
       margin: 0 !important;
+      padding: 0 !important;
       width: var(--safari-glass-host-width, 300px) !important;
       height: var(--safari-glass-host-height, 100%) !important;
+      min-width: 0 !important;
       max-width: none !important;
       background: transparent !important;
       visibility: visible !important;
       transition: none !important;
+
+      /* Out of the browser's flex row, the tab strip stops being stretched
+         and collapses to its content; put it back to the popup's width. */
+      & #titlebar,
+      & #tabbrowser-tabs,
+      & #zen-tabs-wrapper,
+      & zen-workspace,
+      & .zen-workspace-tabs-section,
+      & .zen-current-workspace-indicator,
+      & #zen-sidebar-top-buttons,
+      & #nav-bar {
+        width: 100% !important;
+        max-width: none !important;
+        min-width: 0 !important;
+      }
 
       & #titlebar {
         visibility: visible !important;
@@ -558,7 +575,7 @@
       position: fixed;
       top: 0;
       bottom: 0;
-      width: 8px;
+      width: 14px;
       z-index: 20;
       inset-inline-start: 0;
     }
@@ -566,6 +583,24 @@
     :root[zen-right-side="true"] & {
       inset-inline-start: auto;
       inset-inline-end: 0;
+    }
+  }
+
+  /* Holds the traffic lights' place in this window while the sidebar that
+     normally carries them is in the popup. */
+  #safari-glass-buttons {
+    display: none;
+
+    :root[safari-glass-hosted] & {
+      display: block;
+      position: fixed;
+      appearance: auto;
+      -moz-default-appearance: -moz-window-button-box;
+      left: var(--safari-buttons-x, 0px);
+      top: var(--safari-buttons-y, 0px);
+      width: var(--safari-buttons-width, 70px);
+      height: var(--safari-buttons-height, 20px);
+      z-index: 21;
     }
   }
 

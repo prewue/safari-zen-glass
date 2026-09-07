@@ -23,8 +23,9 @@ const VAR_COLOUR = "--safari-glass-backdrop";
 const TAG = "[Safari-like Zen / glass]";
 const HOST_ID = "safari-glass-host";
 const STRIP_ID = "safari-glass-strip";
-// How long the sidebar stays after the pointer leaves it, matching Zen's own.
-const HIDE_MS = 120;
+const BUTTONS_ID = "safari-glass-buttons";
+// How long the sidebar stays after the pointer leaves it.
+const HIDE_MS = 260;
 const LIB = "native/SafariZenGlass.dylib";
 // Long enough for the compact toggle's slide, with a margin.
 const FOLLOW_MS = 700;
@@ -139,7 +140,8 @@ const host = {
   panel: null,
   strip: null,
   parent: null,
-  next: null,
+  index: 0,
+  buttons: null,
   hideTimer: 0,
   open: false,
   // The sidebar's real width, kept while it is in the window: Zen does
@@ -171,40 +173,79 @@ const host = {
     // inline style on the slot reaches it.
     const slot = panel.shadowRoot?.querySelector("slot");
     if (slot) {
-      slot.style.setProperty("background", "transparent", "important");
-      slot.style.setProperty("background-color", "transparent", "important");
+      for (const [name, value] of [
+        ["background", "transparent"],
+        ["background-color", "transparent"],
+        ["padding", "0"],
+        ["margin", "0"],
+        ["border", "0"],
+        ["box-shadow", "none"],
+      ]) {
+        slot.style.setProperty(name, value, "important");
+      }
     }
 
     // Zen reveals the sidebar when the pointer reaches the sliver of toolbox it
     // leaves on screen; in the popup there is no sliver, so this strip is it.
     const strip = document.createXULElement("box");
     strip.id = STRIP_ID;
-    strip.addEventListener("mouseenter", () => this.reveal());
+    strip.addEventListener("mouseenter", () => this.reveal("strip"));
+    strip.addEventListener("mouseleave", () => this.unreveal("strip"));
     document.getElementById("browser")?.appendChild(strip);
     this.strip = strip;
+
+    panel.addEventListener("mouseenter", () => this.reveal("panel"));
+    panel.addEventListener("mouseleave", () => this.unreveal("panel"));
+    panel.addEventListener("popuphidden", () => this.over.clear());
+
+    // macOS draws the traffic lights itself, from the window-button box Gecko
+    // reports for *this* window. With the real one away in the popup there is
+    // nothing to report, and the buttons disappear; this stand-in keeps them.
+    const buttons = document.createXULElement("box");
+    buttons.id = BUTTONS_ID;
+    document.getElementById("browser")?.appendChild(buttons);
+    this.buttons = buttons;
   },
 
-  reveal() {
-    try {
-      window.gZenCompactModeManager?.flashSidebar?.(400);
-    } catch (e) {}
-    this.toolbox?.setAttribute("zen-has-hover", "true");
+  // The pointer state is ours: Zen's own hover tracking fires a mouseleave on
+  // the document the moment the pointer crosses into the popup's window, which
+  // would close the sidebar under the cursor. Counted per target, because the
+  // strip's leave and the popup's enter arrive in either order.
+  over: new Set(),
+
+  get hover() {
+    return this.over.size > 0;
+  },
+
+  reveal(what = "strip") {
+    this.over.add(what);
+    window.clearTimeout(this.hideTimer);
+    this.hideTimer = 0;
     schedule();
   },
 
-  // Zen keeps its own reveal attributes on the toolbox wherever it lives.
-  get revealed() {
+  unreveal(what = "strip", delay = HIDE_MS) {
+    this.over.delete(what);
+    if (this.over.size) return;
+    window.clearTimeout(this.hideTimer);
+    this.hideTimer = window.setTimeout(() => {
+      this.hideTimer = 0;
+      schedule();
+    }, delay);
+  },
+
+  // Everything Zen reveals for that is not hover: the keyboard toggle, a menu,
+  // a tab being dragged, the empty tab.
+  get zenWants() {
     const t = this.toolbox;
     if (!t) return false;
-    return [
-      "zen-has-hover",
-      "zen-user-show",
-      "zen-has-empty-tab",
-      "flash-popup",
-      "has-popup-menu",
-      "movingtab",
-      "zen-compact-mode-active",
-    ].some(a => t.hasAttribute(a));
+    return ["zen-user-show", "zen-has-empty-tab", "flash-popup", "has-popup-menu", "movingtab", "zen-compact-mode-active"].some(
+      a => t.hasAttribute(a)
+    );
+  },
+
+  get revealed() {
+    return this.hover || this.zenWants;
   },
 
   // moveBefore, not appendChild: a state-preserving move keeps the running
@@ -222,7 +263,9 @@ const host = {
     const t = this.toolbox;
     if (!t || t.parentElement === this.panel) return;
     this.parent = t.parentElement;
-    this.next = t.nextElementSibling;
+    // An index, not a sibling: the sibling can be gone by the time it goes
+    // back, and appending then puts the sidebar on the wrong side of the page.
+    this.index = [...this.parent.children].indexOf(t);
     this.move(t, this.panel, null);
     root.setAttribute("safari-glass-hosted", "");
   },
@@ -236,21 +279,39 @@ const host = {
     const t = this.toolbox;
     if (t && this.panel && t.parentElement === this.panel) {
       const parent = this.parent ?? document.getElementById("browser");
-      const before = this.next && this.next.parentElement === parent ? this.next : null;
+      const before = parent.children[Math.max(0, this.index)] ?? null;
       this.move(t, parent, before);
     }
     root.removeAttribute("safari-glass-hosted");
   },
 
-  // The sidebar's rect inside the window: Zen's float on three sides.
+  // The sidebar's rect inside the window: Zen's own width, floated by half the
+  // compact float on every side, which is where compact puts its panel.
   rect() {
-    const gap = parseFloat(getComputedStyle(root).getPropertyValue("--zen-compact-float") || "14") / 2;
-    const width = parseFloat(getComputedStyle(root).getPropertyValue("--zen-sidebar-width") || "0") || 250;
-    const pad = parseFloat(getComputedStyle(root).getPropertyValue("--zen-toolbox-padding") || "6");
-    const w = Math.round(width + pad * 2);
+    const style = getComputedStyle(this.toolbox ?? root);
+    const float = parseFloat(style.getPropertyValue("--zen-compact-float")) || 14;
+    const gap = Math.round(float / 2);
+    // Compact's toolbox carries the float as padding; the panel inside it is
+    // that much narrower, and the popup *is* the panel.
+    const w = Math.round((this.width || parseFloat(style.getPropertyValue("--zen-sidebar-width")) || 300) - float);
     const h = Math.round(window.innerHeight - gap * 2);
-    const x = rightSide() ? Math.round(window.innerWidth - gap - w) : Math.round(gap);
-    return { x, y: Math.round(gap), width: w, height: h };
+    const x = rightSide() ? Math.round(window.innerWidth - gap - w) : gap;
+    return { x, y: gap, width: w, height: h };
+  },
+
+  // Where the traffic lights sit inside the sidebar, so the stand-in can hold
+  // their place in this window while the real box is in the popup.
+  placeButtons() {
+    if (!this.buttons) return;
+    const real = document.querySelector(".titlebar-buttonbox-container");
+    const b = real?.getBoundingClientRect();
+    if (!b || !b.width) return;
+    // Rects inside the popup come back in this window's space, so the real
+    // box's own position is where the stand-in belongs.
+    this.buttons.style.setProperty("--safari-buttons-x", Math.round(b.x) + "px");
+    this.buttons.style.setProperty("--safari-buttons-y", Math.round(b.y) + "px");
+    this.buttons.style.setProperty("--safari-buttons-width", Math.round(b.width) + "px");
+    this.buttons.style.setProperty("--safari-buttons-height", Math.round(b.height) + "px");
   },
 
   show() {
@@ -270,12 +331,14 @@ const host = {
       this.panel.moveTo(window.mozInnerScreenX + r.x, window.mozInnerScreenY + r.y);
     }
     this.open = true;
+    this.placeButtons();
     return r;
   },
 
   hide() {
     if (!this.panel) return;
     this.open = false;
+    this.over.clear();
     try {
       this.panel.hidePopup();
     } catch (e) {}
@@ -289,8 +352,10 @@ const host = {
     this.hideTimer = 0;
     this.hide();
     this.strip?.remove();
+    this.buttons?.remove();
     this.panel?.remove();
     this.strip = null;
+    this.buttons = null;
     this.panel = null;
   },
 };
@@ -399,17 +464,6 @@ function schedule() {
     update();
     if (window.performance.now() < followUntil) schedule();
   });
-}
-
-// Zen drops its reveal attributes the moment the pointer leaves; give the
-// sidebar the same grace period it has in stock compact before it goes.
-function scheduleCompact() {
-  window.clearTimeout(host.hideTimer);
-  if (!host.revealed && host.open) {
-    host.hideTimer = window.setTimeout(schedule, HIDE_MS);
-    return;
-  }
-  schedule();
 }
 
 // The compact toggle animates the toolbox's inline margin; keep updating every
@@ -539,6 +593,14 @@ function hide() {
   debug("hidden");
 }
 
+// A popup window keeps its parent focused, so a real blur means the user left
+// Zen: let the sidebar go with it.
+function onWindowBlur() {
+  if (!compact() || !host.hover) return;
+  host.over.clear();
+  host.unreveal("panel", 0);
+}
+
 function onStyle() {
   if (shown) fn.style(handle, Services.prefs.getStringPref(PREF_STYLE, "regular") === "clear" ? 1 : 0);
 }
@@ -594,7 +656,7 @@ async function start() {
       "zen-has-empty-tab",
     ],
   });
-  toolboxObserver = new window.MutationObserver(() => (compact() ? scheduleCompact() : schedule()));
+  toolboxObserver = new window.MutationObserver(() => (compact() ? follow(200) : schedule()));
   toolboxObserver.observe(t, {
     attributes: true,
     // Zen's compact reveal conditions, from zen-compact-mode.css, plus the
@@ -616,6 +678,7 @@ async function start() {
   styleObserver = new window.MutationObserver(pushColour);
   styleObserver.observe(root, { attributes: true, attributeFilter: ["style", "zen-has-empty-tab"] });
   window.addEventListener("resize", schedule);
+  window.addEventListener("blur", onWindowBlur);
   Services.prefs.addObserver(PREF_STYLE, onStyle);
   Services.prefs.addObserver(PREF_VIBRANCY, schedule);
   Services.prefs.addObserver(PREF_COMPACT, schedule);
@@ -636,6 +699,7 @@ function stop() {
   toolboxObserver?.disconnect();
   styleObserver?.disconnect();
   window.removeEventListener("resize", schedule);
+  window.removeEventListener("blur", onWindowBlur);
   Services.prefs.removeObserver(PREF_STYLE, onStyle);
   Services.prefs.removeObserver(PREF_VIBRANCY, schedule);
   Services.prefs.removeObserver(PREF_COMPACT, schedule);

@@ -1503,7 +1503,7 @@ re-parented into a transparent popup that floats above the glass. Verified:
 the popup renders over the glass, the real sidebar renders inside it, and
 clicking a tab in it switches tabs.
 
-Four things this needs:
+Seven things this needs:
 
 1. **A transparent popup.** `nsMenuPopupFrame::CreateWidget` takes the window's
    transparency from `nsLayoutUtils::GetFrameTransparency` on the popup frame,
@@ -1519,12 +1519,34 @@ Four things this needs:
 3. **`moveBefore`, not `appendChild`.** A state-preserving move keeps the
    animations Zen's compact toggle awaits. Removing and re-inserting the
    toolbox cancels them and `zen-compact-animating` never clears.
-4. **Two hooks on `gZenCompactModeManager`.** It starts its animation
+4. **The sidebar's own width back.** Out of `#browser`'s flex row the tab strip
+   stops being stretched and collapses to its content - the workspace measured
+   112px inside a 333px popup, and every tab label was cut - so the strip and
+   its workspaces are put back to the popup's width. The popup itself is the
+   panel: Zen's compact toolbox carries the float as padding, so the popup is
+   the toolbox's width less the float, floated by half of it.
+5. **A stand-in for the traffic lights.** macOS draws them itself, from the
+   window-button box Gecko reports for *that* window; with the real box away in
+   the popup there is nothing to report and the buttons vanish. An empty
+   `-moz-window-button-box` in the main window, placed where the real box lands,
+   keeps them - and they draw in the window's frame, above the glass.
+6. **Its own pointer tracking.** Zen's hover logic fires a `mouseleave` on the
+   document the moment the pointer crosses into the popup's window, which would
+   close the sidebar under the cursor. The strip and the popup are tracked
+   separately - the strip's leave and the popup's enter arrive in either order -
+   and Zen's non-hover reveals (the keyboard toggle, a menu, a dragged tab, the
+   empty tab) are still honoured.
+7. **Two hooks on `gZenCompactModeManager`.** It starts its animation
    synchronously right after flipping the attribute, so an observer cannot hand
    the toolbox back in time: `animateCompactMode` releases it first. And
    `getAndApplySidebarWidth` must never see the popup's geometry - nor return
    `undefined`, which Zen subtracts from and feeds to a keyframe, wedging the
    toggle for good. Both are restored when the glass stops.
+
+**Putting the sidebar back where it was.** `release()` used a sibling captured
+at adopt time; by the time it runs that sibling can be gone, and inserting
+`null` appends - which put the sidebar *after* the page and drew it on the
+right. It restores by index now.
 
 **Harness note.** When the display sleeps or the window is fully occluded,
 Gecko suspends the refresh driver: `requestAnimationFrame` never fires, Zen's
