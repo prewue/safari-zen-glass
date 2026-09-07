@@ -508,6 +508,7 @@ const host = {
   // truth, so check it while the sidebar is out.
   arm() {
     if (this.watchdog) return;
+    let misses = 0;
     this.watchdog = window.setInterval(() => {
       if (!this.open) return this.disarm();
       let hovered = false;
@@ -516,12 +517,18 @@ const host = {
       } catch (e) {
         return;
       }
-      if (hovered && !this.over.has("panel")) {
-        this.over.add("panel");
-      } else if (!hovered && this.over.size) {
-        this.over.clear();
-        this.unreveal("watchdog", HIDE_MS);
+      if (hovered) {
+        misses = 0;
+        if (!this.over.has("panel")) this.over.add("panel");
+        return;
       }
+      // Only a correction, never the normal way out: mouseleave closes the
+      // sidebar, and this catches the one that went missing.
+      if (!this.over.size) return;
+      if (++misses < 3) return;
+      misses = 0;
+      this.over.clear();
+      this.unreveal("watchdog", HIDE_MS);
     }, 300);
   },
 
