@@ -26,6 +26,8 @@ const STRIP_ID = "safari-glass-strip";
 const BUTTONS_ID = "safari-glass-buttons";
 // How long the sidebar stays after the pointer leaves it.
 const HIDE_MS = 260;
+// The slide, matching Zen's own compact reveal.
+const SLIDE_MS = 190;
 const LIB = "native/SafariZenGlass.dylib";
 // Long enough for the compact toggle's slide, with a margin.
 const FOLLOW_MS = 700;
@@ -143,7 +145,17 @@ const host = {
   index: 0,
   buttons: null,
   hideTimer: 0,
+  watchdog: 0,
   open: false,
+  urlbarPopover: null,
+  urlbarObserver: null,
+  // 0 parked off the window edge, 1 fully out. The popup stays where it is and
+  // its content slides inside it, with the glass moving in step.
+  progress: 0,
+  target: 0,
+  raf: 0,
+  from: 0,
+  since: 0,
   // The sidebar's real width, kept while it is in the window: Zen does
   // arithmetic on whatever getAndApplySidebarWidth returns, and the popup's
   // geometry is not the sidebar's.
@@ -180,6 +192,8 @@ const host = {
         ["margin", "0"],
         ["border", "0"],
         ["box-shadow", "none"],
+        // the sidebar slides inside the popup, and is clipped by its edge
+        ["overflow", "clip"],
       ]) {
         slot.style.setProperty(name, value, "important");
       }
@@ -259,9 +273,50 @@ const host = {
     }
   },
 
+  // The urlbar is a popover in breakout mode: inside the popup that puts it in
+  // the *window's* top layer, behind it, and the search field goes missing.
+  // Out of breakout it lays out in place - and Firefox puts breakout back on
+  // every layout pass, so this watches for it.
+  tameUrlbar() {
+    const urlbar = document.getElementById("urlbar");
+    if (!urlbar) return;
+    if (this.urlbarPopover === null) this.urlbarPopover = urlbar.getAttribute("popover") ?? "";
+    const strip = () => {
+      if (!urlbar.hasAttribute("breakout") && !urlbar.hasAttribute("popover")) return;
+      try {
+        urlbar.hidePopover?.();
+      } catch (e) {}
+      urlbar.removeAttribute("popover");
+      urlbar.removeAttribute("breakout");
+      urlbar.removeAttribute("breakout-extend");
+    };
+    strip();
+    if (this.urlbarObserver) return;
+    this.urlbarObserver = new window.MutationObserver(strip);
+    this.urlbarObserver.observe(urlbar, { attributes: true, attributeFilter: ["breakout", "popover", "breakout-extend"] });
+  },
+
+  freeUrlbar() {
+    this.urlbarObserver?.disconnect();
+    this.urlbarObserver = null;
+    const urlbar = document.getElementById("urlbar");
+    if (urlbar && this.urlbarPopover) urlbar.setAttribute("popover", this.urlbarPopover);
+    if (urlbar) urlbar.setAttribute("breakout", "true");
+    this.urlbarPopover = null;
+  },
+
   adopt() {
     const t = this.toolbox;
     if (!t || t.parentElement === this.panel) return;
+    // Zen's compact animation leaves inline styles behind - a hidden urlbar
+    // among them - and finishes them off screen; clear what it would have.
+    for (const prop of ["transition", "pointer-events", "margin-left", "margin-right", "transform", "visibility"]) {
+      t.style.removeProperty(prop);
+    }
+    for (const id of ["titlebar", "urlbar"]) {
+      document.getElementById(id)?.style.removeProperty("visibility");
+    }
+    this.tameUrlbar();
     this.parent = t.parentElement;
     // An index, not a sibling: the sibling can be gone by the time it goes
     // back, and appending then puts the sidebar on the wrong side of the page.
@@ -277,6 +332,7 @@ const host = {
 
   release() {
     const t = this.toolbox;
+    this.freeUrlbar();
     if (t && this.panel && t.parentElement === this.panel) {
       const parent = this.parent ?? document.getElementById("browser");
       const before = parent.children[Math.max(0, this.index)] ?? null;
@@ -285,18 +341,25 @@ const host = {
     root.removeAttribute("safari-glass-hosted");
   },
 
-  // The sidebar's rect inside the window: Zen's own width, floated by half the
-  // compact float on every side, which is where compact puts its panel.
+  // The panel's rect inside the window: Zen's own width, floated by half the
+  // compact float on every side, which is where compact puts its panel. The
+  // popup runs from the window edge so the slide is clipped there, exactly as
+  // compact's own sidebar is.
   rect() {
     const style = getComputedStyle(this.toolbox ?? root);
     const float = parseFloat(style.getPropertyValue("--zen-compact-float")) || 14;
     const gap = Math.round(float / 2);
-    // Compact's toolbox carries the float as padding; the panel inside it is
-    // that much narrower, and the popup *is* the panel.
     const w = Math.round((this.width || parseFloat(style.getPropertyValue("--zen-sidebar-width")) || 300) - float);
     const h = Math.round(window.innerHeight - gap * 2);
     const x = rightSide() ? Math.round(window.innerWidth - gap - w) : gap;
-    return { x, y: gap, width: w, height: h };
+    return { x, y: gap, width: w, height: h, gap, travel: w + gap };
+  },
+
+  // The popup's own rect: the panel plus the gap it slides through.
+  hostRect(r) {
+    return rightSide()
+      ? { x: r.x - 0, y: r.y, width: r.width + r.gap, height: r.height }
+      : { x: 0, y: r.y, width: r.width + r.gap, height: r.height };
   },
 
   // Where the traffic lights sit inside the sidebar, so the stand-in can hold
@@ -314,34 +377,147 @@ const host = {
     this.buttons.style.setProperty("--safari-buttons-height", Math.round(b.height) + "px");
   },
 
-  show() {
-    if (root.hasAttribute("zen-compact-animating")) return this.rect();
-    if (!this.hosted) {
-      const w = this.toolbox?.getBoundingClientRect().width;
-      if (w > 1) this.width = w;
-    }
+  // The sidebar moves into the popup once, when compact starts, and stays
+  // there: leaving it in the window means Zen slides its own sliver in on
+  // hover, and the plain sidebar flashes before the glass one arrives.
+  attach() {
+    if (this.hosted || root.hasAttribute("zen-compact-animating")) return;
+    const w = this.toolbox?.getBoundingClientRect().width;
+    if (w > 1) this.width = w;
     this.build();
     const r = this.rect();
     root.style.setProperty("--safari-glass-host-width", r.width + "px");
     root.style.setProperty("--safari-glass-host-height", r.height + "px");
     this.adopt();
+  },
+
+  show() {
+    if (root.hasAttribute("zen-compact-animating")) return this.rect();
+    this.attach();
+    const r = this.rect();
+    this.last = r;
+    this.radius = cornerFor(r);
+    const h = this.hostRect(r);
+    root.style.setProperty("--safari-glass-host-width", r.width + "px");
+    root.style.setProperty("--safari-glass-host-height", r.height + "px");
+    root.style.setProperty("--safari-glass-host-inset", r.gap + "px");
+    root.style.setProperty("--safari-glass-host-radius", this.radius + "px");
     if (this.panel.state === "closed") {
-      this.panel.openPopup(root, "overlap", r.x, r.y, false, false);
+      this.progress = 0;
+      this.applySlide();
+      this.panel.openPopup(root, "overlap", h.x, h.y, false, false);
     } else {
-      this.panel.moveTo(window.mozInnerScreenX + r.x, window.mozInnerScreenY + r.y);
+      try {
+        this.panel.sizeTo(h.width, h.height);
+      } catch (e) {}
+      this.panel.moveTo(Math.round(window.mozInnerScreenX + h.x), Math.round(window.mozInnerScreenY + h.y));
     }
     this.open = true;
+    root.setAttribute("safari-glass-open", "");
+    this.tameUrlbar();
+    this.arm();
     this.placeButtons();
+    this.slideTo(1);
     return r;
   },
 
-  hide() {
-    if (!this.panel) return;
+  // The reveal is the sidebar sliding out of the window edge, with the glass
+  // moving in step; the popup itself stays put and clips it.
+  slideTo(target) {
+    if (this.target === target && (this.raf || this.progress === target)) return;
+    this.target = target;
+    this.from = this.progress;
+    this.since = window.performance.now();
+    if (!this.raf) this.raf = window.requestAnimationFrame(t => this.step(t));
+  },
+
+  step(now) {
+    this.raf = 0;
+    const t = Math.min(1, (now - this.since) / SLIDE_MS);
+    const eased = 1 - Math.pow(1 - t, 3);
+    this.progress = this.from + (this.target - this.from) * eased;
+    this.applySlide();
+    if (t < 1) {
+      this.raf = window.requestAnimationFrame(next => this.step(next));
+      return;
+    }
+    this.progress = this.target;
+    this.applySlide();
+    if (this.target === 0) this.finishClose();
+  },
+
+  applySlide() {
+    const r = this.last;
+    if (!r) return;
+    const offset = Math.round((1 - this.progress) * r.travel) * (rightSide() ? 1 : -1);
+    root.style.setProperty("--safari-glass-slide", offset + "px");
+    if (!fn || !handle) return;
+    try {
+      fn.frames(
+        handle,
+        r.x + offset, r.y, r.width, r.height,
+        0, 0, 0, 0,
+        this.radius || 12, window.devicePixelRatio, rightSide() ? 1 : 0
+      );
+    } catch (e) {}
+  },
+
+  // A missed mouseleave - the popup opening or closing under the pointer eats
+  // one now and then - would leave the sidebar out for good; :hover is the
+  // truth, so check it while the sidebar is out.
+  arm() {
+    if (this.watchdog) return;
+    this.watchdog = window.setInterval(() => {
+      if (!this.open) return this.disarm();
+      let hovered = false;
+      try {
+        hovered = !!(this.panel?.matches(":hover") || this.strip?.matches(":hover") || this.toolbox?.matches(":hover"));
+      } catch (e) {
+        return;
+      }
+      if (hovered && !this.over.has("panel")) {
+        this.over.add("panel");
+      } else if (!hovered && this.over.size) {
+        this.over.clear();
+        this.unreveal("watchdog", HIDE_MS);
+      }
+    }, 300);
+  },
+
+  disarm() {
+    window.clearInterval(this.watchdog);
+    this.watchdog = 0;
+  },
+
+  // Slides the sidebar back into the edge; the popup and the glass go once it
+  // is out of sight.
+  close() {
+    if (!this.panel || !this.open) {
+      this.finishClose();
+      return;
+    }
+    this.disarm();
+    this.over.clear();
+    this.slideTo(0);
+  },
+
+  finishClose() {
+    root.removeAttribute("safari-glass-open");
     this.open = false;
+    this.progress = 0;
+    this.target = 0;
+    if (this.raf) window.cancelAnimationFrame(this.raf);
+    this.raf = 0;
+    this.disarm();
     this.over.clear();
     try {
-      this.panel.hidePopup();
+      this.panel?.hidePopup();
     } catch (e) {}
+    hide();
+  },
+
+  hide() {
+    this.finishClose();
     this.release();
     root.style.removeProperty("--safari-glass-host-width");
     root.style.removeProperty("--safari-glass-host-height");
@@ -350,6 +526,8 @@ const host = {
   teardown() {
     window.clearTimeout(this.hideTimer);
     this.hideTimer = 0;
+    this.disarm();
+    root.removeAttribute("safari-glass-open");
     this.hide();
     this.strip?.remove();
     this.buttons?.remove();
@@ -488,6 +666,7 @@ function update() {
   if (hosted) {
     patchZen();
     host.build();
+    host.attach();
     root.setAttribute("safari-glass-strip-armed", "");
   } else {
     root.removeAttribute("safari-glass-strip-armed");
@@ -495,8 +674,13 @@ function update() {
   }
 
   if (!wanted()) {
-    if (inCompact) host.hide();
-    hide();
+    // Compact slides out first and hides the glass when it is off screen.
+    if (inCompact && host.open) {
+      host.close();
+    } else {
+      if (inCompact) host.close();
+      hide();
+    }
     return;
   }
   if (inCompact) {
@@ -545,18 +729,10 @@ function updatePinned() {
 // Compact: the glass goes *above* Gecko, where it refracts the page, and the
 // sidebar rides above it in its own window.
 function updateCompact() {
-  const r = host.show();
   root.style.removeProperty(VAR_BAND);
   root.style.removeProperty(VAR_BAND_CONTENT);
-  const corner = cornerFor(r);
-  root.style.setProperty("--safari-glass-host-radius", corner + "px");
   fn.above(handle, 1);
-  fn.frames(
-    handle,
-    r.x, r.y, r.width, r.height,
-    0, 0, 0, 0,
-    corner, window.devicePixelRatio, rightSide() ? 1 : 0
-  );
+  host.show();
 }
 
 // The page canvas colour, straight through on every change: page-canvas.uc.mjs

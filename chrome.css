@@ -526,12 +526,14 @@
     padding: 0 !important;
     margin: 0 !important;
     border-radius: var(--safari-glass-host-radius, 12px) !important;
+    overflow: clip !important;
 
     & #navigator-toolbox {
       position: static !important;
       inset: auto !important;
-      margin: 0 !important;
+      margin: 0 0 0 var(--safari-glass-host-inset, 7px) !important;
       padding: 0 !important;
+      transform: translateX(var(--safari-glass-slide, 0px)) !important;
       width: var(--safari-glass-host-width, 300px) !important;
       height: var(--safari-glass-host-height, 100%) !important;
       min-width: 0 !important;
@@ -559,6 +561,26 @@
         visibility: visible !important;
       }
 
+      /* macOS draws the traffic lights from the stand-in in the main window;
+         the real box only holds their place here. */
+      & .titlebar-buttonbox-container {
+        visibility: hidden !important;
+      }
+
+      /* Zen hides the urlbar while it animates compact off screen, and
+         Firefox's breakout mode would take it out of flow into the window's
+         top layer, behind this popup. */
+      & #urlbar,
+      & #nav-bar {
+        visibility: visible !important;
+      }
+
+      & #urlbar {
+        position: relative !important;
+        inset: auto !important;
+        width: auto !important;
+      }
+
       & #zen-toolbar-background {
         display: none !important;
       }
@@ -575,7 +597,7 @@
       position: fixed;
       top: 0;
       bottom: 0;
-      width: 14px;
+      width: 6px;
       z-index: 20;
       inset-inline-start: 0;
     }
@@ -586,12 +608,16 @@
     }
   }
 
+  :root[zen-right-side="true"] #safari-glass-host #navigator-toolbox {
+    margin: 0 var(--safari-glass-host-inset, 7px) 0 0 !important;
+  }
+
   /* Holds the traffic lights' place in this window while the sidebar that
      normally carries them is in the popup. */
   #safari-glass-buttons {
     display: none;
 
-    :root[safari-glass-hosted] & {
+    :root[safari-glass-open] & {
       display: block;
       position: fixed;
       appearance: auto;
